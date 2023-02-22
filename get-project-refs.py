@@ -30,7 +30,7 @@ def extract_values(obj, key, project_name):
             for k, v in obj.items():
                 if isinstance(v, (dict, list)):
                     extract(v, arr, key)
-                elif k == 'environment_name':
+                elif k == 'environment_name': #TODO: DUMMY, ORDER MATTERS!
                     environment = v
                 elif k == key:
                     if v is not None:

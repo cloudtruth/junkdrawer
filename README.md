@@ -10,3 +10,4 @@ Store useful scripts here and update readme with the script name and a brief des
 
 * `get-project-refs.sh` - Uses the CloudTruth CLI to iterate through all projects to find and list any parameters matching the given search string.
 * `get-project-refs.py` - Uses CloudTruth API to iterate through all projects to find and list any parameters matching the given search string.
+* `delete_integrations.py` - Uses. CloudTruth API to delete all integrations
