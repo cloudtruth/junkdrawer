@@ -9,22 +9,24 @@ from rich.console import Console
 API_TIMEOUT = 300
 console = Console()
 
+
 def get_profile_url(profile):
     return get_profile_data(profile)['server_url']
+
 
 def get_profile_api_key(profile):
     return get_profile_data(profile)['api_key']
 
+
 def get_profile_data(profile):
     cli_config_filename = 'cli.yml'
-    path = ''
 
     match platform.system().lower():
         case 'darwin':
             home_dir = os.environ.get('HOME')
             path = (
-                f'{home_dir}/Library/Application Support/com.cloudtruth.CloudTruth-CLI/' +
-                f'{cli_config_filename}'
+                    f'{home_dir}/Library/Application Support/com.cloudtruth.CloudTruth-CLI/' +
+                    f'{cli_config_filename}'
             )
         case 'linux':
             home_dir = os.environ.get('XDG_CONFIG_HOME')
@@ -43,7 +45,8 @@ def get_profile_data(profile):
 
     return config['profiles'][profile]
 
-def make_request(uri, http_method, headers, body = None):
+
+def make_request(uri, http_method, headers, body=None):
     try:
         response = requests.request(
             method=http_method.upper(),
@@ -56,14 +59,16 @@ def make_request(uri, http_method, headers, body = None):
         response.raise_for_status()
     except HTTPError as err:
         console.log(err)
-        console.log(locals()) #TODO: Debugging-only!!!
+        console.log(locals())  # TODO: Debugging-only!!!
         exit()
 
     return response
 
+
 def get_objects_list(cloudtruth_type, api_url, headers):
     url = f'{api_url}/{cloudtruth_type}/'
     return make_request(url, 'get', headers).json().get('results')
+
 
 def get_object_by_name(name, cloudtruth_type, api_url, headers):
     objs = get_objects_list(cloudtruth_type, api_url, headers)
@@ -74,18 +79,21 @@ def get_object_by_name(name, cloudtruth_type, api_url, headers):
 
     return None
 
+
 def delete_object(obj, cloudtruth_type, api_url, headers):
     obj_id = obj.get('id')
     url = f'{api_url}/{cloudtruth_type}/{obj_id}/'
 
     make_request(url, 'delete', headers)
 
-def get_object_by_id(id, cloudtruth_type, api_url, headers):
+
+def get_object_by_id(object_id, cloudtruth_type, api_url, headers):
     return NOT_IMPLEMENTED
 
-#### PROJECTS
 
-def create_project(name, api_url, headers, parent = None):
+# PROJECTS
+
+def create_project(name, api_url, headers, parent=None):
     project_url = f'{api_url}/projects/'
     depends_on = parent.get('url') if parent is not None else ''
     body = {
@@ -97,7 +105,8 @@ def create_project(name, api_url, headers, parent = None):
 
     return project
 
-def delete_project(project, api_url, headers, force = False):
+
+def delete_project(project, api_url, headers, force=False):
     project_and_dependents = get_project_tree_projects(project, api_url, headers)
 
     for project in reversed(project_and_dependents):
@@ -106,12 +115,14 @@ def delete_project(project, api_url, headers, force = False):
         console.log(f"Deleting project: {project.get('name')}")
         delete_object(project, 'projects', api_url, headers)
 
+
 def project_has_dependents(project):
     child_project_urls = project.get('dependents')
     if len(child_project_urls) > 0:
         return True
 
     return False
+
 
 def project_has_parent(project):
     parent_project_url = project.get('depends_on')
@@ -120,18 +131,19 @@ def project_has_parent(project):
 
     return False
 
-def get_project_tree_projects(project, api_url, headers, projects = None):
+
+def get_project_tree_projects(project, api_url, headers, projects=None):
     if project is None:
         return None
     if projects is None:
         projects = []
         console.log(f"Adding parent, {project.get('name')} to the list")
-        projects.append(project) # put the parent in the list on init
+        projects.append(project)  # put the parent in the list on init
     if project_has_dependents(project):
         child_project_urls = project.get('dependents')
         for child_project_url in child_project_urls:
             child_project = make_request(child_project_url, 'get', headers).json()
-            if project_has_dependents(child_project): # if the child has dependents
+            if project_has_dependents(child_project):  # if the child has dependents
                 console.log(f"Adding a child to the list, {child_project.get('name')} with dependencies")
                 projects.append(child_project)
                 get_project_tree_projects(child_project, api_url, headers, projects)
@@ -140,6 +152,7 @@ def get_project_tree_projects(project, api_url, headers, projects = None):
                 projects.append(child_project)
 
     return projects
+
 
 def get_all_top_level_projects(api_url, headers):
     all_projects = get_objects_list('projects', api_url, headers)
@@ -151,10 +164,11 @@ def get_all_top_level_projects(api_url, headers):
 
     return top_level_projects
 
-#### PARAMETERS
+
+# PARAMETERS
 
 def create_parameter(name, project, api_url, headers):
-    #TODO: handle secrets?
+    # TODO: handle secrets?
 
     project_id = project.get('id')
     param_url = f"{api_url}/projects/{project_id}/parameters/"
@@ -166,6 +180,7 @@ def create_parameter(name, project, api_url, headers):
 
     return param
 
+
 def delete_project_parameters(project, api_url, headers):
     project_id = project.get('id')
     project_parameters_url = f"{api_url}/projects/{project_id}/parameters/"
@@ -175,15 +190,17 @@ def delete_project_parameters(project, api_url, headers):
     for parameter in parameters:
         delete_parameter(project_id, parameter, api_url, headers)
 
+
 def delete_parameter(project_id, parameter, api_url, headers):
     parameter_id = parameter.get('id')
     parameter_url = f"{api_url}/projects/{project_id}/parameters/{parameter_id}"
 
     make_request(parameter_url, 'delete', api_url, headers)
 
-#### ENVIRONMENTS
 
-def create_environment(name, api_url, headers, parent = None):
+# ENVIRONMENTS
+
+def create_environment(name, api_url, headers, parent=None):
     env_url = f'{api_url}/environments/'
     parent_uri = parent.get('url') if parent is not None else ''
     body = {
@@ -195,7 +212,8 @@ def create_environment(name, api_url, headers, parent = None):
 
     return env
 
-#### MISC
+
+# MISC
 
 def nuke():
     return NOT_IMPLEMENTED

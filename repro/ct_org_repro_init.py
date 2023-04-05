@@ -15,6 +15,7 @@ PARAMETER_PREFIX = 'param-testing_'
 EXIT_ERR = 1
 EXIT_SUCCESS = 0
 
+
 def parse_args():
     usage_text = (
         'Creates or deletes projects, envs, templates, and parameters based on inputs'
@@ -56,20 +57,20 @@ def parse_args():
         '--levels',
         metavar='N',
         help=(
-            'Number of extra levels to nest (depth).\n' +
-            'each level will get the same number of child projects and environments, default is 0'
+                'Number of extra levels to nest (depth).\n' +
+                'each level will get the same number of child projects and environments, default is 0'
         ),
         type=int,
         default=0,
     )
     parser.add_argument(
         '--create',
-        help=('Create given types if empty and not associated, requires one or more base types to be set'),
+        help='Create given types if empty and not associated, requires one or more base types to be set',
         action='store_true',
     )
     parser.add_argument(
         '--delete',
-        help=('Delete given types if empty and not associated, requires one or more base types to be set'),
+        help='Delete given types if empty and not associated, requires one or more base types to be set',
         action='store_true',
     )
     parser.add_argument(
@@ -80,16 +81,16 @@ def parse_args():
     parser.add_argument(
         '--force',
         help=(
-            'Used for deleting everything associated with the given type, ' +
-            'requires a base type to be set'
+                'Used for deleting everything associated with the given type, ' +
+                'requires a base type to be set'
         ),
         action='store_true',
     )
     parser.add_argument(
         '--reset-org',
         help=(
-            'The nuclear option. Resets org to default state. ' +
-            'Will delete everything, even previously created models'
+                'The nuclear option. Resets org to default state. ' +
+                'Will delete everything, even previously created models'
         ),
         action='store_true',
     )
@@ -128,7 +129,8 @@ def parse_args():
 
     return parser.parse_args()
 
-def create_projects(count, parent_project_name = None):
+
+def create_projects(count, parent_project_name=None):
     created_projects = []
     parent_project = None
 
@@ -151,6 +153,7 @@ def create_projects(count, parent_project_name = None):
 
     console.log(f'Created {len(created_projects)} projects')
 
+
 def create_envs(count, parent):
     i = 0
     while i < count:
@@ -159,18 +162,21 @@ def create_envs(count, parent):
         _envs.append(env)
         i += 1
 
+
 def create_params(count, project):
     i = 0
     param_name = PARAMETER_PREFIX + shortuuid.uuid()
     while i < count:
         helpers.create_parameter(param_name, project, _api_url, _headers)
 
+
 def delete_all_parameters():
     projects = helpers.get_objects_list('projects', _api_url, _headers)
     for project in projects:
         helpers.delete_project_parameters(project, _api_url, _headers)
 
-def delete_all_projects(force = False):
+
+def delete_all_projects(force=False):
     console.print('Deleting all projects')
     projects = helpers.get_all_top_level_projects(_api_url, _headers)
 
@@ -182,7 +188,8 @@ def delete_all_projects(force = False):
 
     return True
 
-def delete_single_project(project_root_name = None, force = False):
+
+def delete_single_project(project_root_name=None, force=False):
     project = helpers.get_object_by_name(project_root_name, 'projects', _api_url, _headers)
 
     if not project:
@@ -261,8 +268,6 @@ def main():
             if args.templates:
                 console.print('deleting templates')
 
-
-
     # # reset org
     # if args.reset_org and args.force:
     #     console.print('Nuking everything')
@@ -270,7 +275,6 @@ def main():
     #     foo = helpers.nuke()
     #     console.print('Nuke complete')
     #     exit(foo)
-
 
     # # create environments
     # env_count = args.envs
@@ -305,12 +309,13 @@ def main():
 
     #     helpers.delete_project(project, _api_url, _headers, delete_params)
 
-    #TODO: implement template create
-    #TODO: implement destroy_params
-    #TODO: implement destroy_envs
-    #TODO: implement destroy_projects
-    #TODO: implement destroy_all
-    #TODO: implement store data?
+    # TODO: implement template create
+    # TODO: implement destroy_params
+    # TODO: implement destroy_envs
+    # TODO: implement destroy_projects
+    # TODO: implement destroy_all
+    # TODO: implement store data?
+
 
 if __name__ == "__main__":
     main()
