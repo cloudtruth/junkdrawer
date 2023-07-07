@@ -19,6 +19,9 @@ rand() {
     echo $(( RANDOM % max + 1))
 }
 
+start_time=$(date)
+echo "$0 started at $start_time"
+
 echo "Set CLOUDTRUTH_* to use different config"
 echo "e.g."
 echo "  CLOUDTRUTH_PROFILE=staging $(basename $0)"
@@ -43,8 +46,8 @@ echo base_project=${base_project} - the base project name
 echo child_project=${child_project} - the child project name
 echo base_count=${base_count} - how many params and secrets to create in base project
 echo child_count=${child_count} - how many params and secrets to create in child project
-echo production_step=${production_step} - every Nth item gets overriden for production
-echo staging_step=${staging_step} - every Nth item gets overriden for staging
+echo production_step=${production_step} - every Nth item gets overridden for production
+echo staging_step=${staging_step} - every Nth item gets overridden for staging
 echo
 
 cloudtruth project set "${base_project}"
@@ -116,3 +119,6 @@ done
 
 cloudtruth environment tag set production stable
 cloudtruth environment tag set staging stable
+
+end_time=$(date)
+echo "$0 started at: $start_time and ended at: $end_time"
