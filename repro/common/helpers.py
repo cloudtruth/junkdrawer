@@ -106,12 +106,10 @@ def create_project(name, api_url, headers, parent=None):
     return project
 
 
-def delete_project(project, api_url, headers, force=False):
+def delete_project(project, api_url, headers):
     project_and_dependents = get_project_tree_projects(project, api_url, headers)
 
     for project in reversed(project_and_dependents):
-        if force:
-            delete_project_parameters(project, api_url, headers)
         console.log(f"Deleting project: {project.get('name')}")
         delete_object(project, 'projects', api_url, headers)
 
@@ -137,7 +135,7 @@ def get_project_tree_projects(project, api_url, headers, projects=None):
         return None
     if projects is None:
         projects = []
-        console.log(f"Adding parent, {project.get('name')} to the list")
+        console.log(f"Adding parent, {project.get('name')} to the array of projects")
         projects.append(project)  # put the parent in the list on init
     if project_has_dependents(project):
         child_project_urls = project.get('dependents')
@@ -163,6 +161,58 @@ def get_all_top_level_projects(api_url, headers):
             top_level_projects.append(project)
 
     return top_level_projects
+
+# ENVIRONMENTS
+
+def create_environment(name, api_url, headers, parent=None):
+    env_url = f'{api_url}/environments/'
+    parent_uri = parent.get('url') if parent is not None else ''
+    body = {
+        "name": name,
+        "parent": parent_uri
+    }
+
+    env = make_request(env_url, 'post', headers, body).json()
+
+    return env
+
+def delete_environment(environment, api_url, headers):
+    if environment == 'default':
+        return False
+
+    environment_and_dependents = get_environment_tree_environments(environment, api_url, headers)
+
+    for environment in reversed(environment_and_dependents):
+        console.log(f"Deleting environment: {environment.get('name')}")
+        delete_object(environment, 'environments', api_url, headers)
+
+def environment_has_dependents(environment):
+    child_environment_urls = environment.get('children')
+    if len(child_environment_urls) > 0:
+        return True
+
+    return False
+
+def get_environment_tree_environments(environment, api_url, headers, environments=None):
+    if environment is None:
+        return None
+    if environments is None:
+        environments = []
+        console.log(f"Adding parent: {environment.get('name')} to the array of environments")
+        environments.append(environment)
+    if environment_has_dependents(environment):
+        child_environment_urls = environment.get('children')
+        for child_environment_url in child_environment_urls:
+            child_environment = make_request(child_environment_url, 'get', headers).json()
+            if environment_has_dependents(child_environment):
+                console.log(f"Adding a child to the list, {child_environment.get('name')} with dependencies")
+                environments.append(child_environment)
+                get_environment_tree_environments(child_environment, api_url, headers, environments)
+            else:
+                console.log(f"Adding a child to the list, {child_environment.get('name')} with no dependencies")
+                environments.append(child_environment)
+
+    return environments
 
 
 # PARAMETERS
@@ -196,21 +246,6 @@ def delete_parameter(project_id, parameter, api_url, headers):
     parameter_url = f"{api_url}/projects/{project_id}/parameters/{parameter_id}"
 
     make_request(parameter_url, 'delete', api_url, headers)
-
-
-# ENVIRONMENTS
-
-def create_environment(name, api_url, headers, parent=None):
-    env_url = f'{api_url}/environments/'
-    parent_uri = parent.get('url') if parent is not None else ''
-    body = {
-        "name": name,
-        "parent": parent_uri
-    }
-
-    env = make_request(env_url, 'post', headers, body).json()
-
-    return env
 
 
 # MISC
