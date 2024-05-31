@@ -9,7 +9,7 @@ jobs:
         with:
           apiKey: "${{ secrets.CLOUDTRUTH_API_KEY }}"
           project: action-push-testing
-          env: dev1
+          environment: dev1
           server: https://api.staging.cloudtruth.io
       - name: dump env
         run: |
