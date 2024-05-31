@@ -1,0 +1,17 @@
+name: 'CloudTruth Configure'
+on:
+  gollum
+
+jobs:
+  configure-action-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: cloudtruth/configure-action@v2.2.0
+        with:
+          apiKey: "${{ secrets.CLOUDTRUTH_API_KEY }}"
+          project: action-push-testing
+          env: dev1
+          server: https://api.staging.cloudtruth.io
+      - name: dump env
+        run: |
+          printenv | sort
