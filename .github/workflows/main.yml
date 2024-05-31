@@ -1,6 +1,5 @@
 name: 'CloudTruth Configure'
-on:
-  gollum
+on: workflow_dispatch
 
 jobs:
   configure-action-test:
