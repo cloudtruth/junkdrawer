@@ -5,7 +5,7 @@ jobs:
   configure-action-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: dwdozier/configure-action@main
+      - uses: dwdozier/configure-action@v2.2.7
         with:
           apiKey: "${{ secrets.CLOUDTRUTH_API_KEY }}"
           project: action-push-testing
