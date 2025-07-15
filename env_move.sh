@@ -77,7 +77,7 @@ while [[ "$1" =~ ^- ]]; do
             ;;
         *)
             echo "🚨 Error: Unknown option '$1'"
-            echo "Usage: $0 [--keep-files] [--dry-run] <environment-to-create> <parent-environment> [profile]"
+            echo "Usage: $0 [--keep-files] [--dry-run] <environment-to-move> <parent-environment> [profile]"
             exit 1
             ;;
     esac
@@ -86,12 +86,13 @@ done
 # Check for required arguments.
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "🚨 Error: Missing required arguments."
-    echo "Usage: $0 [--keep-files] [--dry-run] <environment-to-create> <parent-environment> [profile]"
+    echo "Usage: $0 [--keep-files] [--dry-run] <environment-to-move> <parent-environment> [profile]"
     exit 1
 fi
 
-ENVIRONMENT=$1
+SOURCE_ENVIRONMENT=$1
 PARENT_ENVIRONMENT=$2
+TARGET_ENVIRONMENT="${SOURCE_ENVIRONMENT}_TEMP"
 DEFAULT_PROFILE="default"
 PROFILE=${3:-$DEFAULT_PROFILE}
 
@@ -136,16 +137,17 @@ BASE_URL="https://api.cloudtruth.io/api/v1"
 # --- Temporary File Management ---
 # Define human-readable names for temporary files in the current directory.
 GLOBAL_BACKUP_FILE="cloudtruth_snapshot.json"
-PARENT_LOOKUP_RESPONSE_FILE="parent_lookup_api_response.json"
-CREATE_RESPONSE_FILE="create_env_api_response.json"
-CHILD_LOOKUP_RESPONSE_FILE="child_lookup_api_response.json"
+PARENT_ENV_LOOKUP_RESPONSE_FILE="parent_env_lookup_api_response.json"
+CREATE_ENV_RESPONSE_FILE="create_env_api_response.json"
+TARGET_ENV_LOOKUP_RESPONSE_FILE="target_env_lookup_api_response.json"
+SOURCE_ENV_LOOKUP_RESPONSE_FILE="source_env_lookup_api_response.json"
 
 if [ "$KEEP_FILES" = false ]; then
     # Ensure all temporary files are removed when the script exits by default.
     echo "🧹 Temporary files will be deleted on exit. Use --keep-files to prevent this."
-    trap 'rm -f "$GLOBAL_BACKUP_FILE" "$PARENT_LOOKUP_RESPONSE_FILE" "$CREATE_RESPONSE_FILE" "$CHILD_LOOKUP_RESPONSE_FILE"; unset API_KEY' EXIT
+    trap 'rm -f "$GLOBAL_BACKUP_FILE" "$PARENT_ENV_LOOKUP_RESPONSE_FILE" "$CREATE_ENV_RESPONSE_FILE" "$TARGET_ENV_LOOKUP_RESPONSE_FILE" "$SOURCE_ENV_LOOKUP_RESPONSE_FILE"; unset API_KEY' EXIT
 else
-    echo "🐛 Keeping temporary files for debugging: $GLOBAL_BACKUP_FILE, $PARENT_LOOKUP_RESPONSE_FILE, $CREATE_RESPONSE_FILE, $CHILD_LOOKUP_RESPONSE_FILE"
+    echo "🐛 Keeping temporary files for debugging: $GLOBAL_BACKUP_FILE, $PARENT_ENV_LOOKUP_RESPONSE_FILE, $CREATE_ENV_RESPONSE_FILE, $TARGET_ENV_LOOKUP_RESPONSE_FILE, $SOURCE_ENV_LOOKUP_RESPONSE_FILE"
 fi
 
 # --- Global Backup ---
@@ -174,9 +176,9 @@ fi
 # --- Environment Verification and Creation ---
 echo "🔎 Verifying environments..."
 
-# 1. Check for the parent environment. We must find it to get its URI.
-PARENT_ENV_LOOKUP_URL="${BASE_URL}/environments/?name__icontains=${PARENT_ENVIRONMENT}"
-CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$PARENT_LOOKUP_RESPONSE_FILE" \
+# 1. Check for the parent environment and capture its URI.
+PARENT_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${PARENT_ENVIRONMENT}"
+CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$PARENT_ENV_LOOKUP_RESPONSE_FILE" \
     -H "Authorization: Api-Key $API_KEY" \
     "$PARENT_ENV_LOOKUP_URL")
 
@@ -184,71 +186,93 @@ PARENT_LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
 PARENT_LOOKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
 
 if [ "$PARENT_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up parent environment '$PARENT_ENVIRONMENT'. API returned status $PARENT_LOOKUP_STATUS. (took ${PARENT_LOOKUP_TIME}s)"
-    jq . "$PARENT_LOOKUP_RESPONSE_FILE"
+    echo "🚨 Error looking up the parent environment '$PARENT_ENVIRONMENT'. API returned status $PARENT_LOOKUP_STATUS. (took ${PARENT_LOOKUP_TIME}s)"
+    jq . "$PARENT_ENV_LOOKUP_RESPONSE_FILE"
     exit 1
 fi
 
-PARENT_COUNT=$(jq '.count' "$PARENT_LOOKUP_RESPONSE_FILE")
+PARENT_COUNT=$(jq '.count' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
 if [ "$PARENT_COUNT" -ne 1 ]; then
-    echo "🚨 Error: Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous (found $PARENT_COUNT). (took ${PARENT_LOOKUP_TIME}s)"
-    exit 1
+    echo "🚨 Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous (found $PARENT_COUNT). (took ${PARENT_LOOKUP_TIME}s)"
+    die "Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous.  Exiting."
 fi
 
 echo "✅ Parent Environment '$PARENT_ENVIRONMENT' exists. (took ${PARENT_LOOKUP_TIME}s)"
-PARENT_ENV_URI=$(jq -r '.results[0].url' "$PARENT_LOOKUP_RESPONSE_FILE")
+PARENT_ENV_URI=$(jq -r '.results[0].url' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
 
-# 2. Check if the target environment already exists.
-CHILD_ENV_LOOKUP_URL="${BASE_URL}/environments/?name__icontains=${ENVIRONMENT}"
-CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$CHILD_LOOKUP_RESPONSE_FILE" \
+# 2. Check that the source environment to move exists.
+SOURCE_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${SOURCE_ENVIRONMENT}"
+CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$SOURCE_ENV_LOOKUP_RESPONSE_FILE" \
     -H "Authorization: Api-Key $API_KEY" \
-    "$CHILD_ENV_LOOKUP_URL")
+    "$SOURCE_ENV_LOOKUP_URL")
 
-CHILD_LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
-CHILD_LOOKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
+SOURCE_LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
+SOURCE_LOOKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
 
-if [ "$CHILD_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up environment '$ENVIRONMENT'. API returned status $CHILD_LOOKUP_STATUS. (took ${CHILD_LOOKUP_TIME}s)"
-    jq . "$CHILD_LOOKUP_RESPONSE_FILE"
+if [ "$SOURCE_LOOKUP_STATUS" -ne 200 ]; then
+    echo "🚨 Error looking up the source environment '$SOURCE_ENVIRONMENT'. API returned status $SOURCE_LOOKUP_STATUS. (took ${SOURCE_LOOKUP_TIME}s)"
+    jq . "$SOURCE_ENV_LOOKUP_RESPONSE_FILE"
     exit 1
 fi
 
-CHILD_COUNT=$(jq '.count' "$CHILD_LOOKUP_RESPONSE_FILE")
-SKIP_CREATION=false
+SOURCE_COUNT=$(jq '.count' "$SOURCE_ENV_LOOKUP_RESPONSE_FILE")
+if [ "$SOURCE_COUNT" -ne 1 ]; then
+    echo "🚨 Error: Source environment to move '$SOURCE_ENVIRONMENT' not found or is ambiguous (found $SOURCE_COUNT). (took ${SOURCE_LOOKUP_TIME}s)"
+    die "Source environment '$SOURCE_ENVIRONMENT' not found or is ambiguous. Exiting."
+fi
+echo "✅ Source environment to move '$SOURCE_ENVIRONMENT' found. (took ${SOURCE_LOOKUP_TIME}s)"
+
+# 3. Check if the target environment already exists. It should NOT.
+TARGET_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${TARGET_ENVIRONMENT}"
+CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$TARGET_ENV_LOOKUP_RESPONSE_FILE" \
+    -H "Authorization: Api-Key $API_KEY" \
+    "$TARGET_ENV_LOOKUP_URL")
+
+TARGET_ENV_LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
+TARGET_ENV_LOOKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
+
+if [ "$TARGET_ENV_LOOKUP_STATUS" -ne 200 ]; then
+    echo "🚨 Error looking up the target environment '$TARGET_ENVIRONMENT'. API returned status $TARGET_ENV_LOOKUP_STATUS. (took ${TARGET_ENV_LOOKUP_TIME}s)"
+    jq . "$TARGET_ENV_LOOKUP_RESPONSE_FILE"
+    exit 1
+fi
+
+CHILD_COUNT=$(jq '.count' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
 if [ "$CHILD_COUNT" -gt 0 ]; then
+    echo "⚠️ Target environment '$TARGET_ENVIRONMENT' already exists. Did you create this environment ahead of time?"
     while true; do
-        # Prompt the user for what to do with the existing environment.
-        read -rp "🤔 Environment '$ENVIRONMENT' already exists. Was this created in anticipation of this process? (y/n) " yn
         case $yn in
             [Yy]*)
-                echo "✅ OK. Environment already exists as intended. Proceeding to next step."
+                echo "✅ OK. You created this environment ahead of time, proceeding to the next step."
                 SKIP_CREATION=true
                 break
                 ;;
             [Nn]*)
-                ORIGINAL_ENV_NAME=$ENVIRONMENT
-                ENVIRONMENT="${ENVIRONMENT}_TEMP"
-                echo "OK. The existing '$ORIGINAL_ENV_NAME' will be left alone. Will proceed with creating '$ENVIRONMENT'."
+                echo "❌ Please remove the existing target environment '$TARGET_ENVIRONMENT' before proceeding."
+                exit 1
                 break
                 ;;
-            *) echo "Please answer yes (y) or no (n)." ;;
+            *)
+                echo "❓ Please answer yes (y) or no (n)."
+                read -r yn
+                ;;
         esac
     done
 else
-    echo "🤔 Environment '$ENVIRONMENT' not found. (took ${CHILD_LOOKUP_TIME}s)"
+    echo "🤔 Environment '$TARGET_ENVIRONMENT' not found. (took ${TARGET_ENV_LOOKUP_TIME}s)"
 fi
 
 if [ "$SKIP_CREATION" = false ]; then
     # 3. If we're here, the child environment does not exist or needs to be created with a _TEMP suffix.
     if [ "$DRY_RUN" = true ]; then
-        echo "DRY RUN: Would create environment '$ENVIRONMENT' under '$PARENT_ENVIRONMENT'."
+        echo "DRY RUN: Would create environment '$TARGET_ENVIRONMENT' under '$PARENT_ENVIRONMENT'."
     else
         # --- Asynchronous Creation and Polling ---
         # Update the lookup URL in case the environment name was changed to _TEMP
-        CHILD_ENV_LOOKUP_URL="${BASE_URL}/environments/?name__icontains=${ENVIRONMENT}"
-        echo "Submitting request to create environment '$ENVIRONMENT'..."
+        TARGET_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${TARGET_ENVIRONMENT}"
+        echo "Submitting request to create environment '$TARGET_ENVIRONMENT'..."
         CREATE_ENV_URL="${BASE_URL}/environments/"
-        CREATE_PAYLOAD=$(jq -n --arg name "$ENVIRONMENT" --arg parent_uri "$PARENT_ENV_URI" '{name: $name, parent: $parent_uri}')
+        CREATE_PAYLOAD=$(jq -n --arg name "$TARGET_ENVIRONMENT" --arg parent_uri "$PARENT_ENV_URI" '{name: $name, parent: $parent_uri}')
 
         # Submit the creation request and run it in the background. We don't wait for it.
         # Output is redirected to /dev/null as we will poll for the result.
@@ -275,17 +299,17 @@ if [ "$SKIP_CREATION" = false ]; then
             fi
 
             # Re-use the child lookup URL and file to check for the new environment
-            CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$CHILD_LOOKUP_RESPONSE_FILE" \
+            CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$TARGET_ENV_LOOKUP_RESPONSE_FILE" \
                 -H "Authorization: Api-Key $API_KEY" \
-                "$CHILD_ENV_LOOKUP_URL")
+                "$TARGET_ENV_LOOKUP_URL")
 
             LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
 
             if [ "$LOOKUP_STATUS" -eq 200 ]; then
-                CHILD_COUNT=$(jq '.count' "$CHILD_LOOKUP_RESPONSE_FILE")
+                CHILD_COUNT=$(jq '.count' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
                 if [ "$CHILD_COUNT" -gt 0 ]; then
                     TOTAL_CREATION_TIME=$((SECONDS - POLL_START_TIME))
-                    echo -e "\n✅ Environment '$ENVIRONMENT' created successfully. (took ${TOTAL_CREATION_TIME}s)"
+                    echo -e "\n✅ Environment '$TARGET_ENVIRONMENT' created successfully. (took ${TOTAL_CREATION_TIME}s)"
                     break # Success, exit the polling loop
                 fi
             fi
@@ -299,4 +323,4 @@ fi
 
 echo
 echo "---"
-echo "Next step: Populate values for environment '$ENVIRONMENT' (logic to be added)."
+echo "Next step: Populate values for the environment '$TARGET_ENVIRONMENT' (logic to be added)."
