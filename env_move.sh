@@ -15,13 +15,13 @@
 #   If the curl command fails, prints an error message including the curl output and returns 1.
 api_request() {
     local URL="$1"
-    local METHOD="${2:-GET}"  # Default to GET
+    local METHOD="${2:-GET}" # Default to GET
     local PAYLOAD="${3:-}"   # Optional payload
     local OUTPUT_FILE="$4"
 
-    local CURL_CMD=(curl -s -w "%{http_code}\n%{time_total}" \
-        -X "$METHOD" \
-        -H "Authorization: Api-Key $API_KEY" \
+    local CURL_CMD=(curl -s -w "%{http_code}\n%{time_total}"
+        -X "$METHOD"
+        -H "Authorization: Api-Key $API_KEY"
         -H "Content-Type: application/json")
 
     if [ -n "$PAYLOAD" ]; then
@@ -31,14 +31,14 @@ api_request() {
 
     # Execute the curl command and capture its return code, output, and combined output (stdout/stderr)
     local CURL_OUTPUT
-    CURL_OUTPUT=$( "${CURL_CMD[@]}" 2>&1 ) # Capture both stdout and stderr
+    CURL_OUTPUT=$("${CURL_CMD[@]}" 2>&1) # Capture both stdout and stderr
     local CURL_STATUS=$?
 
     if [ $CURL_STATUS -ne 0 ]; then
         echo "🚨 Error: curl command failed with status $CURL_STATUS"
         echo "Command: ${CURL_CMD[*]}"
         echo "Output: $CURL_OUTPUT"
-        return 1  # Indicate failure to the caller
+        return 1 # Indicate failure to the caller
     fi
 
     echo "$CURL_OUTPUT"
@@ -92,7 +92,81 @@ check_environment() {
     return 0
 }
 
+usage() {
+    cat <<EOF
+Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-k] [-d] [-s] <environment-to-move> <parent-environment> [profile]
+
+Moves a CloudTruth environment to a new parent. This is a destructive operation
+that is accomplished by creating a new temporary environment, copying values,
+and then renaming. A full backup is performed before any changes are made.
+
+Available options:
+
+-h          Print this help and exit.
+-k          Keep temporary files created during the script's execution.
+-d          Delete the backup snapshot file upon script completion.
+-s          Dry run. Show what would be done without making any changes.
+EOF
+    exit
+}
+
 #### MAIN ####
+
+# --- Argument Parsing ---
+# Initialize variables for options
+KEEP_TEMP_FILES="false"
+DELETE_SNAPSHOT_FILE="false"
+DRY_RUN="false"
+
+# Use getopts to parse command-line arguments
+while getopts ":hkds" opt; do
+    case "$opt" in
+    h)
+        usage
+        ;;
+    k)
+        KEEP_TEMP_FILES="true"
+        ;;
+    d)
+        DELETE_SNAPSHOT_FILE="true"
+        ;;
+    s)
+        DRY_RUN="true"
+        ;;
+    \?)
+        echo "🚨 Error: Invalid option: -$OPTARG. Use -h for help." >&2
+        exit 1
+        ;;
+    :)
+        echo "🚨 Error: Option -$OPTARG requires an argument. Use -h for help." >&2
+        exit 1
+        ;;
+    esac
+done
+
+# Shift off the options so we're left with the positional arguments.
+shift $((OPTIND - 1))
+
+# Check for required arguments.
+if [ "$#" -lt 2 ]; then
+    echo "🚨 Error: Missing required arguments. Use -h for help." >&2
+    exit 1
+fi
+
+# Assign positional arguments to variables.
+SOURCE_ENVIRONMENT=$1
+PARENT_ENVIRONMENT=$2
+
+# If a third argument is provided, use it as the profile; otherwise, use the default.
+TARGET_ENVIRONMENT="${SOURCE_ENVIRONMENT}_TEMP"
+DEFAULT_PROFILE="default"
+PROFILE=${3:-$DEFAULT_PROFILE}
+
+# Basic validation of arguments, ensuring SOURCE and PARENT are not empty.
+[[ -z "$SOURCE_ENVIRONMENT" || -z "$PARENT_ENVIRONMENT" ]] && {
+    echo "Error: environment and parent cannot be empty"
+    exit 1
+}
 
 # --- OS-Specific Configuration & Initial Checks ---
 
@@ -103,29 +177,29 @@ echo "Detected OS: $OS"
 
 # Define potential configuration file locations based on OS
 case "$OS" in
-    Linux)
-        # Follows XDG Base Directory Specification
+Linux)
+    # Follows XDG Base Directory Specification
+    locations=(
+        "$XDG_CONFIG_HOME/cloudtruth/cli.yml"
+        "$HOME/.config/cloudtruth/cli.yml"
+    )
+    ;;
+Darwin)
+    # macOS standard location
+    locations=(
+        "$HOME/Library/Application Support/com.cloudtruth.CloudTruth-CLI/cli.yml"
+    )
+    ;;
+*)
+    # Basic check for Windows-like environments (Git Bash, etc.)
+    if [[ "$OS" == "MINGW"* ]] || [[ "$OS" == "CYGWIN"* ]]; then
         locations=(
-            "$XDG_CONFIG_HOME/cloudtruth/cli.yml"
-            "$HOME/.config/cloudtruth/cli.yml"
+            "$APPDATA/cloudtruth/cli.yml"
         )
-        ;;
-    Darwin)
-        # macOS standard location
-        locations=(
-            "$HOME/Library/Application Support/com.cloudtruth.CloudTruth-CLI/cli.yml"
-        )
-        ;;
-    *)
-        # Basic check for Windows-like environments (Git Bash, etc.)
-        if [[ "$OS" == "MINGW"* ]] || [[ "$OS" == "CYGWIN"* ]]; then
-            locations=(
-                "$APPDATA/cloudtruth/cli.yml"
-            )
-        else
-            locations=()
-        fi
-        ;;
+    else
+        locations=()
+    fi
+    ;;
 esac
 
 # Find the first existing config file from the locations array
@@ -139,7 +213,7 @@ done
 
 # If a config file was found, we absolutely need yq. Check for it and exit if not found.
 if [ -n "$CONFIG_FILE" ]; then
-    if ! command -v yq &> /dev/null; then
+    if ! command -v yq &>/dev/null; then
         echo "🚨 Error: '$CONFIG_FILE' found, but 'yq' is not installed."
         echo "Please install yq to continue, or move the config file to enter the key manually."
         exit 1
@@ -147,53 +221,11 @@ if [ -n "$CONFIG_FILE" ]; then
 fi
 
 # We need jq to parse API responses.
-if ! command -v jq &> /dev/null; then
+if ! command -v jq &>/dev/null; then
     echo "🚨 Error: 'jq' is not installed, but it is required to parse API responses."
     echo "Please install jq to continue."
     exit 1
 fi
-
-# --- Argument Parsing ---
-KEEP_TEMP_FILES=false
-DRY_RUN=false
-
-DELETE_SNAPSHOT_FILE=false
-# Parse command-line options like --keep-files
-# Note: Options must appear BEFORE positional arguments
-while [[ "$1" =~ ^- ]]; do
-    case "$1" in
-        --keep-temp-files)
-            KEEP_TEMP_FILES=true
-            shift
-            ;;
-        --delete-snapshot-file)
-            DELETE_SNAPSHOT_FILE=true
-            shift
-            ;;
-        --dry-run)
-            DRY_RUN=true
-            shift
-            ;;
-        *)
-            echo "🚨 Error: Unknown option '$1'"
-            echo "Usage: $0 [--keep-files] [--dry-run] <environment-to-move> <parent-environment> [profile]"
-            exit 1
-            ;;
-    esac
-done
-
-# Check for required arguments.
-if [ -z "$1" ] || [ -z "$2" ]; then
-    echo "🚨 Error: Missing required arguments."
-    echo "Usage: $0 [--keep-files] [--dry-run] <environment-to-move> <parent-environment> [profile]"
-    exit 1
-fi
-
-SOURCE_ENVIRONMENT=$1
-PARENT_ENVIRONMENT=$2
-TARGET_ENVIRONMENT="${SOURCE_ENVIRONMENT}_TEMP"
-DEFAULT_PROFILE="default"
-PROFILE=${3:-$DEFAULT_PROFILE}
 
 # Initialize API_KEY variable
 API_KEY=""
@@ -319,20 +351,20 @@ if [ "$CHILD_COUNT" -gt 0 ]; then
     echo "⚠️ Target environment '$TARGET_ENVIRONMENT' already exists. Did you create this environment ahead of time?"
     while true; do
         case $yn in
-            [Yy]*)
-                echo "✅ OK. You created this environment ahead of time, proceeding to the next step."
-                SKIP_CREATION=true
-                break
-                ;;
-            [Nn]*)
-                echo "❌ Please remove the existing target environment '$TARGET_ENVIRONMENT' before proceeding."
-                exit 1
-                break
-                ;;
-            *)
-                echo "❓ Please answer yes (y) or no (n)."
-                read -r yn
-                ;;
+        [Yy]*)
+            echo "✅ OK. You created this environment ahead of time, proceeding to the next step."
+            SKIP_CREATION=true
+            break
+            ;;
+        [Nn]*)
+            echo "❌ Please remove the existing target environment '$TARGET_ENVIRONMENT' before proceeding."
+            exit 1
+            break
+            ;;
+        *)
+            echo "❓ Please answer yes (y) or no (n)."
+            read -r yn
+            ;;
         esac
     done
 fi
@@ -356,11 +388,11 @@ if [ "$SKIP_CREATION" = false ]; then
 
         # Poll for up to 10 minutes with adaptive backoff to see if the environment was created.
         POLL_START_TIME=$SECONDS
-        POLL_TIMEOUT=600  # 10 minutes
+        POLL_TIMEOUT=600 # 10 minutes
 
         # --- Adaptive Polling Parameters ---
         POLL_INTERVAL=5      # Initial interval in seconds
-        POLL_MAX_INTERVAL=60    # Maximum interval in seconds
+        POLL_MAX_INTERVAL=60 # Maximum interval in seconds
 
         echo -n "Polling for environment creation status with adaptive backoff (up to 10 minutes) "
         while :; do
@@ -390,7 +422,7 @@ if [ "$SKIP_CREATION" = false ]; then
             sleep "$POLL_INTERVAL"
 
             # --- Calculate next interval for adaptive backoff by multiplying by 1.5 (approximately) ---
-            NEXT_POLL_INTERVAL=$(( (POLL_INTERVAL * 3) / 2 ))
+            NEXT_POLL_INTERVAL=$(((POLL_INTERVAL * 3) / 2))
 
             if [ "$NEXT_POLL_INTERVAL" -gt "$POLL_MAX_INTERVAL" ]; then
                 POLL_INTERVAL="$POLL_MAX_INTERVAL"
