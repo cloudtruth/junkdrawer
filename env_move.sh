@@ -61,19 +61,25 @@ if ! command -v jq &> /dev/null; then
 fi
 
 # --- Argument Parsing ---
-KEEP_FILES=false
+KEEP_TEMP_FILES=false
 DRY_RUN=false
 
+DELETE_SNAPSHOT_FILE=false
 # Parse command-line options like --keep-files
+# Note: Options must appear BEFORE positional arguments
 while [[ "$1" =~ ^- ]]; do
     case "$1" in
-        --keep-files)
-            KEEP_FILES=true
-            shift # past argument
+        --keep-temp-files)
+            KEEP_TEMP_FILES=true
+            shift
+            ;;
+        --delete-snapshot-file)
+            DELETE_SNAPSHOT_FILE=true
+            shift
             ;;
         --dry-run)
             DRY_RUN=true
-            shift # past argument
+            shift
             ;;
         *)
             echo "🚨 Error: Unknown option '$1'"
@@ -139,16 +145,30 @@ BASE_URL="https://api.cloudtruth.io/api/v1"
 GLOBAL_BACKUP_FILE="cloudtruth_snapshot.json"
 PARENT_ENV_LOOKUP_RESPONSE_FILE="parent_env_lookup_api_response.json"
 CREATE_ENV_RESPONSE_FILE="create_env_api_response.json"
-TARGET_ENV_LOOKUP_RESPONSE_FILE="target_env_lookup_api_response.json"
 SOURCE_ENV_LOOKUP_RESPONSE_FILE="source_env_lookup_api_response.json"
+TARGET_ENV_LOOKUP_RESPONSE_FILE="target_env_lookup_api_response.json"
 
-if [ "$KEEP_FILES" = false ]; then
-    # Ensure all temporary files are removed when the script exits by default.
-    echo "🧹 Temporary files will be deleted on exit. Use --keep-files to prevent this."
-    trap 'rm -f "$GLOBAL_BACKUP_FILE" "$PARENT_ENV_LOOKUP_RESPONSE_FILE" "$CREATE_ENV_RESPONSE_FILE" "$TARGET_ENV_LOOKUP_RESPONSE_FILE" "$SOURCE_ENV_LOOKUP_RESPONSE_FILE"; unset API_KEY' EXIT
-else
-    echo "🐛 Keeping temporary files for debugging: $GLOBAL_BACKUP_FILE, $PARENT_ENV_LOOKUP_RESPONSE_FILE, $CREATE_ENV_RESPONSE_FILE, $TARGET_ENV_LOOKUP_RESPONSE_FILE, $SOURCE_ENV_LOOKUP_RESPONSE_FILE"
+TEMP_FILES="$PARENT_ENV_LOOKUP_RESPONSE_FILE $CREATE_ENV_RESPONSE_FILE $SOURCE_ENV_LOOKUP_RESPONSE_FILE $TARGET_ENV_LOOKUP_RESPONSE_FILE"
+
+if [ "$KEEP_TEMP_FILES" = true ]; then
+    echo "🧹 Option --keep-temp-files was used, ${TEMP_FILES} will be kept"
+    TEMP_FILES=""
 fi
+
+if [ "$DELETE_SNAPSHOT_FILE" = true ]; then
+    echo "🧹 Option --delete-snapshot-file was used, deleting the snapshot file when the script exits"
+    TEMP_FILES="$GLOBAL_BACKUP_FILE $TEMP_FILES"
+fi
+
+cleanup() {
+    if [ "$KEEP_TEMP_FILES" = false ]; then
+        echo "🧹 Cleaning up temporary files: $TEMP_FILES"
+        rm -f $TEMP_FILES
+    fi
+
+    unset API_KEY
+}
+trap cleanup EXIT
 
 # --- Global Backup ---
 echo "💾 Creating a full organization backup snapshot before proceeding..."
@@ -194,7 +214,7 @@ fi
 PARENT_COUNT=$(jq '.count' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
 if [ "$PARENT_COUNT" -ne 1 ]; then
     echo "🚨 Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous (found $PARENT_COUNT). (took ${PARENT_LOOKUP_TIME}s)"
-    die "Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous.  Exiting."
+    exit 1
 fi
 
 echo "✅ Parent Environment '$PARENT_ENVIRONMENT' exists. (took ${PARENT_LOOKUP_TIME}s)"
@@ -218,7 +238,7 @@ fi
 SOURCE_COUNT=$(jq '.count' "$SOURCE_ENV_LOOKUP_RESPONSE_FILE")
 if [ "$SOURCE_COUNT" -ne 1 ]; then
     echo "🚨 Error: Source environment to move '$SOURCE_ENVIRONMENT' not found or is ambiguous (found $SOURCE_COUNT). (took ${SOURCE_LOOKUP_TIME}s)"
-    die "Source environment '$SOURCE_ENVIRONMENT' not found or is ambiguous. Exiting."
+    exit 1
 fi
 echo "✅ Source environment to move '$SOURCE_ENVIRONMENT' found. (took ${SOURCE_LOOKUP_TIME}s)"
 
@@ -237,6 +257,7 @@ if [ "$TARGET_ENV_LOOKUP_STATUS" -ne 200 ]; then
     exit 1
 fi
 
+SKIP_CREATION=false
 CHILD_COUNT=$(jq '.count' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
 if [ "$CHILD_COUNT" -gt 0 ]; then
     echo "⚠️ Target environment '$TARGET_ENVIRONMENT' already exists. Did you create this environment ahead of time?"
@@ -324,3 +345,5 @@ fi
 echo
 echo "---"
 echo "Next step: Populate values for the environment '$TARGET_ENVIRONMENT' (logic to be added)."
+
+exit 0
