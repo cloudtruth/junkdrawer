@@ -353,14 +353,24 @@ if [ "$CHILD_COUNT" -gt 0 ]; then
         case $yn in
         [Yy]*)
             echo "✅ OK. You created this environment ahead of time, proceeding to the next step."
-            SKIP_CREATION=true
-            break
-            ;;
+            # Since the target environment already exists, we need to check if its parent is correct.
+            TARGET_ENV_DETAILS=$(jq -r '.results[0]' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
+            TARGET_ENV_PARENT_URI=$(echo "$TARGET_ENV_DETAILS" | jq -r '.parent')
+            if [ "$TARGET_ENV_PARENT_URI" != "$PARENT_ENV_URI" ]; then
+                echo "🚨 Error: The existing target environment '$TARGET_ENVIRONMENT' has the wrong parent."
+                echo "Expected parent: '$PARENT_ENVIRONMENT', but found a different parent."
+                echo "Please correct the parent of the existing environment or specify the correct parent when running this script."
+                exit 1
+            else
+                echo "✅ The existing target environment '$TARGET_ENVIRONMENT' has the correct parent ('$PARENT_ENVIRONMENT')."
+                SKIP_CREATION=true
+                break
+            fi
+        ;;
         [Nn]*)
             echo "❌ Please remove the existing target environment '$TARGET_ENVIRONMENT' before proceeding."
             exit 1
-            break
-            ;;
+        ;;
         *)
             echo "❓ Please answer yes (y) or no (n)."
             read -r yn
