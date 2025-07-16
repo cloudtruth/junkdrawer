@@ -1,12 +1,54 @@
 #!/bin/bash
 
+#### Functions ####
+
+# Function to perform an API request with error handling.
+# Globals:
+#   API_KEY
+# Arguments:
+#   URL: The API endpoint URL.
+#   METHOD: HTTP method (default: GET).
+#   PAYLOAD: JSON payload (optional).
+#   OUTPUT_FILE: File to save the response to.
+# Returns:
+#   A string containing the HTTP status code and the request time, separated by a newline.
+#   If the curl command fails, prints an error message including the curl output and returns 1.
+api_request() {
+    local URL="$1"
+    local METHOD="${2:-GET}"  # Default to GET
+    local PAYLOAD="${3:-}"   # Optional payload
+    local OUTPUT_FILE="$4"
+
+    local CURL_CMD=(curl -s -w "%{http_code}\n%{time_total}" -o "$OUTPUT_FILE" \
+        -X "$METHOD" \
+        -H "Authorization: Api-Key $API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD" \
+        -o "$OUTPUT_FILE" "$URL")
+
+    # Execute the curl command and capture its return code, output, and combined output (stdout/stderr)
+    local CURL_OUTPUT
+    CURL_OUTPUT=$( "${CURL_CMD[@]}" 2>&1 ) # Capture both stdout and stderr
+    local CURL_STATUS=$?
+
+    if [ $CURL_STATUS -ne 0 ]; then
+        echo "🚨 Error: curl command failed with status $CURL_STATUS"
+        echo "Command: ${CURL_CMD[*]}"
+        echo "Output: $CURL_OUTPUT"
+        return 1  # Indicate failure to the caller
+    fi
+
+    echo "$CURL_OUTPUT"
+}
+
+#### MAIN ####
+
 # --- OS-Specific Configuration & Initial Checks ---
 
 CONFIG_FILE=""
 OS="$(uname -s)"
 
 echo "Detected OS: $OS"
-
 
 # Define potential configuration file locations based on OS
 case "$OS" in
@@ -174,23 +216,18 @@ trap cleanup EXIT
 echo "💾 Creating a full organization backup snapshot before proceeding..."
 BACKUP_URL="${BASE_URL}/backup/snapshot/"
 
-CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$GLOBAL_BACKUP_FILE" \
-    -X POST \
-    -H "Authorization: Api-Key $API_KEY" \
-    "$BACKUP_URL")
-
-BACKUP_HTTP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
-BACKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
+BACKUP_RESULT=$(api_request "$BACKUP_URL" POST "" "$GLOBAL_BACKUP_FILE")
+BACKUP_HTTP_STATUS=$(echo -e "$BACKUP_RESULT" | head -n 1)
+BACKUP_TIME=$(echo -e "$BACKUP_RESULT" | tail -n 1)
 
 if [ "$BACKUP_HTTP_STATUS" -eq 200 ]; then
-    echo "✅ Full backup snapshot successful. Data saved to '$GLOBAL_BACKUP_FILE'. (took ${BACKUP_TIME}s)"
+    echo "✅ Full backup snapshot successful. Data saved to '$GLOBAL_BACKUP_FILE'. (took ${BACKUP_TIME}s.)"
 else
-    echo -e "\n🚨 Error: Failed to create a full backup snapshot. The API returned status code $BACKUP_HTTP_STATUS. (took ${BACKUP_TIME}s)"
+    echo -e "\n🚨 Error: Failed to create a full backup snapshot. The API returned status code $BACKUP_HTTP_STATUS. (took ${BACKUP_TIME}s.)"
     echo "API Response:"
     # The response is already in the file, so just display it.
     cat "$GLOBAL_BACKUP_FILE"
-    echo "Aborting move operation due to backup failure."
-    exit 1
+    return 1
 fi
 
 # --- Environment Verification and Creation ---
@@ -198,61 +235,52 @@ echo "🔎 Verifying environments..."
 
 # 1. Check for the parent environment and capture its URI.
 PARENT_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${PARENT_ENVIRONMENT}"
-CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$PARENT_ENV_LOOKUP_RESPONSE_FILE" \
-    -H "Authorization: Api-Key $API_KEY" \
-    "$PARENT_ENV_LOOKUP_URL")
+PARENT_ENV_LOOKUP_RESULT=$(api_request "$PARENT_ENV_LOOKUP_URL" GET "" "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
+PARENT_ENV_LOOKUP_STATUS=$(echo -e "$PARENT_ENV_LOOKUP_RESULT" | head -n 1)
+PARENT_ENV_LOOKUP_TIME=$(echo -e "$PARENT_ENV_LOOKUP_RESULT" | tail -n 1)
 
-PARENT_LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
-PARENT_LOOKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
-
-if [ "$PARENT_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up the parent environment '$PARENT_ENVIRONMENT'. API returned status $PARENT_LOOKUP_STATUS. (took ${PARENT_LOOKUP_TIME}s)"
+if [ "$PARENT_ENV_LOOKUP_STATUS" -ne 200 ]; then
+    echo "🚨 Error looking up the parent environment '$PARENT_ENVIRONMENT'. API returned status $PARENT_ENV_LOOKUP_STATUS. (took ${PARENT_ENV_LOOKUP_TIME}s.)"
     jq . "$PARENT_ENV_LOOKUP_RESPONSE_FILE"
     exit 1
 fi
 
 PARENT_COUNT=$(jq '.count' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
 if [ "$PARENT_COUNT" -ne 1 ]; then
-    echo "🚨 Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous (found $PARENT_COUNT). (took ${PARENT_LOOKUP_TIME}s)"
+    echo "🚨 Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous (found $PARENT_COUNT). (took ${PARENT_ENV_LOOKUP_TIME}s.)"
     exit 1
 fi
 
-echo "✅ Parent Environment '$PARENT_ENVIRONMENT' exists. (took ${PARENT_LOOKUP_TIME}s)"
+echo "✅ Parent Environment '$PARENT_ENVIRONMENT' exists. (took ${PARENT_ENV_LOOKUP_TIME}s)"
 PARENT_ENV_URI=$(jq -r '.results[0].url' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
 
 # 2. Check that the source environment to move exists.
 SOURCE_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${SOURCE_ENVIRONMENT}"
-CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$SOURCE_ENV_LOOKUP_RESPONSE_FILE" \
-    -H "Authorization: Api-Key $API_KEY" \
-    "$SOURCE_ENV_LOOKUP_URL")
+SOURCE_ENV_LOOKUP_RESULT=$(api_request "$SOURCE_ENV_LOOKUP_URL" GET "" "$SOURCE_ENV_LOOKUP_RESPONSE_FILE")
+SOURCE_ENV_LOOKUP_STATUS=$(echo -e "$SOURCE_ENV_LOOKUP_RESULT" | head -n 1)
+SOURCE_ENV_LOOKUP_TIME=$(echo -e "$SOURCE_ENV_LOOKUP_RESULT" | tail -n 1)
 
-SOURCE_LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
-SOURCE_LOOKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
-
-if [ "$SOURCE_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up the source environment '$SOURCE_ENVIRONMENT'. API returned status $SOURCE_LOOKUP_STATUS. (took ${SOURCE_LOOKUP_TIME}s)"
+if [ "$SOURCE_ENV_LOOKUP_STATUS" -ne 200 ]; then
+    echo "🚨 Error looking up the source environment '$SOURCE_ENVIRONMENT'. API returned status $SOURCE_ENV_LOOKUP_STATUS. (took ${SOURCE_ENV_LOOKUP_TIME}s.)"
     jq . "$SOURCE_ENV_LOOKUP_RESPONSE_FILE"
     exit 1
 fi
 
 SOURCE_COUNT=$(jq '.count' "$SOURCE_ENV_LOOKUP_RESPONSE_FILE")
 if [ "$SOURCE_COUNT" -ne 1 ]; then
-    echo "🚨 Error: Source environment to move '$SOURCE_ENVIRONMENT' not found or is ambiguous (found $SOURCE_COUNT). (took ${SOURCE_LOOKUP_TIME}s)"
+    echo "🚨 Error: Source environment to move '$SOURCE_ENVIRONMENT' not found or is ambiguous (found $SOURCE_COUNT). (took ${SOURCE_ENV_LOOKUP_TIME}s.)"
     exit 1
 fi
-echo "✅ Source environment to move '$SOURCE_ENVIRONMENT' found. (took ${SOURCE_LOOKUP_TIME}s)"
+echo "✅ Source environment to move '$SOURCE_ENVIRONMENT' found. (took ${SOURCE_ENV_LOOKUP_TIME}s)"
 
 # 3. Check if the target environment already exists. It should NOT.
 TARGET_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${TARGET_ENVIRONMENT}"
-CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$TARGET_ENV_LOOKUP_RESPONSE_FILE" \
-    -H "Authorization: Api-Key $API_KEY" \
-    "$TARGET_ENV_LOOKUP_URL")
-
-TARGET_ENV_LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
-TARGET_ENV_LOOKUP_TIME=$(echo -e "$CURL_OUTPUT" | tail -n 1)
+TARGET_ENV_LOOKUP_RESULT=$(api_request "$TARGET_ENV_LOOKUP_URL" GET "" "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
+TARGET_ENV_LOOKUP_STATUS=$(echo -e "$TARGET_ENV_LOOKUP_RESULT" | head -n 1)
+TARGET_ENV_LOOKUP_TIME=$(echo -e "$TARGET_ENV_LOOKUP_RESULT" | tail -n 1)
 
 if [ "$TARGET_ENV_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up the target environment '$TARGET_ENVIRONMENT'. API returned status $TARGET_ENV_LOOKUP_STATUS. (took ${TARGET_ENV_LOOKUP_TIME}s)"
+    echo "🚨 Error looking up the target environment '$TARGET_ENVIRONMENT'. API returned status $TARGET_ENV_LOOKUP_STATUS. (took ${TARGET_ENV_LOOKUP_TIME}s.)"
     jq . "$TARGET_ENV_LOOKUP_RESPONSE_FILE"
     exit 1
 fi
@@ -297,12 +325,7 @@ if [ "$SKIP_CREATION" = false ]; then
 
         # Submit the creation request and run it in the background. We don't wait for it.
         # Output is redirected to /dev/null as we will poll for the result.
-        curl -s -o /dev/null \
-            -X POST \
-            -H "Authorization: Api-Key $API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$CREATE_PAYLOAD" \
-            "$CREATE_ENV_URL" &
+        api_request "$CREATE_ENV_URL" POST "$CREATE_PAYLOAD" /dev/null &
 
         # Poll for up to 10 minutes to see if the environment was created.
         POLL_START_TIME=$SECONDS
@@ -310,7 +333,7 @@ if [ "$SKIP_CREATION" = false ]; then
         POLL_INTERVAL=15 # Check every 15 seconds
 
         echo -n "Polling for creation status (up to 10 minutes) "
-        while true; do
+        while :; do
             ELAPSED_TIME=$((SECONDS - POLL_START_TIME))
             if [ "$ELAPSED_TIME" -ge "$POLL_TIMEOUT" ]; then
                 echo -e "\n\n🚨 Polling timed out after 10 minutes."
@@ -320,11 +343,8 @@ if [ "$SKIP_CREATION" = false ]; then
             fi
 
             # Re-use the child lookup URL and file to check for the new environment
-            CURL_OUTPUT=$(curl -s -w "%{http_code}\n%{time_total}" -o "$TARGET_ENV_LOOKUP_RESPONSE_FILE" \
-                -H "Authorization: Api-Key $API_KEY" \
-                "$TARGET_ENV_LOOKUP_URL")
-
-            LOOKUP_STATUS=$(echo -e "$CURL_OUTPUT" | head -n 1)
+            TARGET_LOOKUP_RESULT=$(api_request "$TARGET_ENV_LOOKUP_URL" GET "" "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
+            LOOKUP_STATUS=$(echo -e "$TARGET_LOOKUP_RESULT" | head -n 1)
 
             if [ "$LOOKUP_STATUS" -eq 200 ]; then
                 CHILD_COUNT=$(jq '.count' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
