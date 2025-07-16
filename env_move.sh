@@ -88,9 +88,6 @@ check_environment() {
     else
         echo "🤔 Target Environment '$ENV_NAME' check completed. (took ${TIME}s)"
     fi
-    if [ "$ENV_NAME" = "$PARENT_ENVIRONMENT" ]; then
-        PARENT_ENV_URI=$(jq -r '.results[0].url' "$RESPONSE_FILE")
-    fi
 
     return 0
 }
@@ -312,6 +309,9 @@ elif [ $TARGET_RESULT -ne 0 ]; then
     # If target check failed, it might still exist, but we handle that logic later
     : # Do nothing here, the check_environment function already printed the error if needed.
 fi
+
+# Now that parallel checks are complete, extract the parent URI from its response file.
+PARENT_ENV_URI=$(jq -r '.results[0].url' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
 
 SKIP_CREATION=false
 CHILD_COUNT=$(jq '.count' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
