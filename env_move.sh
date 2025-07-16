@@ -19,12 +19,15 @@ api_request() {
     local PAYLOAD="${3:-}"   # Optional payload
     local OUTPUT_FILE="$4"
 
-    local CURL_CMD=(curl -s -w "%{http_code}\n%{time_total}" -o "$OUTPUT_FILE" \
+    local CURL_CMD=(curl -s -w "%{http_code}\n%{time_total}" \
         -X "$METHOD" \
         -H "Authorization: Api-Key $API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "$PAYLOAD" \
-        -o "$OUTPUT_FILE" "$URL")
+        -H "Content-Type: application/json")
+
+    if [ -n "$PAYLOAD" ]; then
+        CURL_CMD+=(-d "$PAYLOAD")
+    fi
+    CURL_CMD+=(-o "$OUTPUT_FILE" "$URL")
 
     # Execute the curl command and capture its return code, output, and combined output (stdout/stderr)
     local CURL_OUTPUT
@@ -39,6 +42,57 @@ api_request() {
     fi
 
     echo "$CURL_OUTPUT"
+}
+
+# Function to check an environment and capture its URI if it exists.
+# Globals:
+#   BASE_URL
+#   API_KEY
+# Arguments:
+#   ENV_NAME: The name of the environment to check.
+#   RESPONSE_FILE: File to save the API response.
+# Returns:
+#   0 if successful (environment exists or target doesn't), 1 if there's an error.
+check_environment() {
+    local RESULT
+    local STATUS
+    local TIME
+    local COUNT
+
+    local ENV_NAME="$1"
+    local RESPONSE_FILE="$2"
+    local IS_TARGET="${3:-false}" # Optional, true if checking the target environment
+
+    local ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${ENV_NAME}"
+    RESULT=$(api_request "$ENV_LOOKUP_URL" GET "" "$RESPONSE_FILE")
+    STATUS=$(echo -e "$RESULT" | head -n 1)
+    TIME=$(echo -e "$RESULT" | tail -n 1)
+
+    if [ "$STATUS" -ne 200 ]; then
+        echo "🚨 Error looking up environment '$ENV_NAME'. API returned status $STATUS. (took ${TIME}s.)"
+        jq . "$RESPONSE_FILE"
+        return 1
+    fi
+
+    COUNT=$(jq '.count' "$RESPONSE_FILE")
+    if [ "$COUNT" -ne 1 ] && [ "$IS_TARGET" = false ]; then
+        echo "🚨 Environment '$ENV_NAME' not found or is ambiguous (found $COUNT). (took ${TIME}s.)"
+        return 1
+    elif [ "$COUNT" -gt 0 ] && [ "$IS_TARGET" = true ]; then
+        # For the target environment, a count > 0 is not an error, but we handle it specially later.
+        return 0
+    fi
+
+    if [ "$IS_TARGET" = false ]; then
+        echo "✅ Environment '$ENV_NAME' exists. (took ${TIME}s)"
+    else
+        echo "🤔 Target Environment '$ENV_NAME' check completed. (took ${TIME}s)"
+    fi
+    if [ "$ENV_NAME" = "$PARENT_ENVIRONMENT" ]; then
+        PARENT_ENV_URI=$(jq -r '.results[0].url' "$RESPONSE_FILE")
+    fi
+
+    return 0
 }
 
 #### MAIN ####
@@ -233,56 +287,30 @@ fi
 # --- Environment Verification and Creation ---
 echo "🔎 Verifying environments..."
 
-# 1. Check for the parent environment and capture its URI.
-PARENT_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${PARENT_ENVIRONMENT}"
-PARENT_ENV_LOOKUP_RESULT=$(api_request "$PARENT_ENV_LOOKUP_URL" GET "" "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
-PARENT_ENV_LOOKUP_STATUS=$(echo -e "$PARENT_ENV_LOOKUP_RESULT" | head -n 1)
-PARENT_ENV_LOOKUP_TIME=$(echo -e "$PARENT_ENV_LOOKUP_RESULT" | tail -n 1)
+# Perform environment checks in parallel
+check_environment "$PARENT_ENVIRONMENT" "$PARENT_ENV_LOOKUP_RESPONSE_FILE" &
+PARENT_PID=$!
+check_environment "$SOURCE_ENVIRONMENT" "$SOURCE_ENV_LOOKUP_RESPONSE_FILE" &
+SOURCE_PID=$!
+check_environment "$TARGET_ENVIRONMENT" "$TARGET_ENV_LOOKUP_RESPONSE_FILE" true &
+TARGET_PID=$!
 
-if [ "$PARENT_ENV_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up the parent environment '$PARENT_ENVIRONMENT'. API returned status $PARENT_ENV_LOOKUP_STATUS. (took ${PARENT_ENV_LOOKUP_TIME}s.)"
-    jq . "$PARENT_ENV_LOOKUP_RESPONSE_FILE"
+# Wait for all checks to complete
+wait $PARENT_PID
+PARENT_RESULT=$?
+wait $SOURCE_PID
+SOURCE_RESULT=$?
+wait $TARGET_PID
+TARGET_RESULT=$?
+
+# Check results of parallel operations
+if [ $PARENT_RESULT -ne 0 ]; then
     exit 1
-fi
-
-PARENT_COUNT=$(jq '.count' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
-if [ "$PARENT_COUNT" -ne 1 ]; then
-    echo "🚨 Parent environment '$PARENT_ENVIRONMENT' not found or is ambiguous (found $PARENT_COUNT). (took ${PARENT_ENV_LOOKUP_TIME}s.)"
+elif [ $SOURCE_RESULT -ne 0 ]; then
     exit 1
-fi
-
-echo "✅ Parent Environment '$PARENT_ENVIRONMENT' exists. (took ${PARENT_ENV_LOOKUP_TIME}s)"
-PARENT_ENV_URI=$(jq -r '.results[0].url' "$PARENT_ENV_LOOKUP_RESPONSE_FILE")
-
-# 2. Check that the source environment to move exists.
-SOURCE_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${SOURCE_ENVIRONMENT}"
-SOURCE_ENV_LOOKUP_RESULT=$(api_request "$SOURCE_ENV_LOOKUP_URL" GET "" "$SOURCE_ENV_LOOKUP_RESPONSE_FILE")
-SOURCE_ENV_LOOKUP_STATUS=$(echo -e "$SOURCE_ENV_LOOKUP_RESULT" | head -n 1)
-SOURCE_ENV_LOOKUP_TIME=$(echo -e "$SOURCE_ENV_LOOKUP_RESULT" | tail -n 1)
-
-if [ "$SOURCE_ENV_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up the source environment '$SOURCE_ENVIRONMENT'. API returned status $SOURCE_ENV_LOOKUP_STATUS. (took ${SOURCE_ENV_LOOKUP_TIME}s.)"
-    jq . "$SOURCE_ENV_LOOKUP_RESPONSE_FILE"
-    exit 1
-fi
-
-SOURCE_COUNT=$(jq '.count' "$SOURCE_ENV_LOOKUP_RESPONSE_FILE")
-if [ "$SOURCE_COUNT" -ne 1 ]; then
-    echo "🚨 Error: Source environment to move '$SOURCE_ENVIRONMENT' not found or is ambiguous (found $SOURCE_COUNT). (took ${SOURCE_ENV_LOOKUP_TIME}s.)"
-    exit 1
-fi
-echo "✅ Source environment to move '$SOURCE_ENVIRONMENT' found. (took ${SOURCE_ENV_LOOKUP_TIME}s)"
-
-# 3. Check if the target environment already exists. It should NOT.
-TARGET_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${TARGET_ENVIRONMENT}"
-TARGET_ENV_LOOKUP_RESULT=$(api_request "$TARGET_ENV_LOOKUP_URL" GET "" "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
-TARGET_ENV_LOOKUP_STATUS=$(echo -e "$TARGET_ENV_LOOKUP_RESULT" | head -n 1)
-TARGET_ENV_LOOKUP_TIME=$(echo -e "$TARGET_ENV_LOOKUP_RESULT" | tail -n 1)
-
-if [ "$TARGET_ENV_LOOKUP_STATUS" -ne 200 ]; then
-    echo "🚨 Error looking up the target environment '$TARGET_ENVIRONMENT'. API returned status $TARGET_ENV_LOOKUP_STATUS. (took ${TARGET_ENV_LOOKUP_TIME}s.)"
-    jq . "$TARGET_ENV_LOOKUP_RESPONSE_FILE"
-    exit 1
+elif [ $TARGET_RESULT -ne 0 ]; then
+    # If target check failed, it might still exist, but we handle that logic later
+    : # Do nothing here, the check_environment function already printed the error if needed.
 fi
 
 SKIP_CREATION=false
@@ -307,8 +335,6 @@ if [ "$CHILD_COUNT" -gt 0 ]; then
                 ;;
         esac
     done
-else
-    echo "🤔 Environment '$TARGET_ENVIRONMENT' not found. (took ${TARGET_ENV_LOOKUP_TIME}s)"
 fi
 
 if [ "$SKIP_CREATION" = false ]; then
@@ -317,6 +343,7 @@ if [ "$SKIP_CREATION" = false ]; then
         echo "DRY RUN: Would create environment '$TARGET_ENVIRONMENT' under '$PARENT_ENVIRONMENT'."
     else
         # --- Asynchronous Creation and Polling ---
+        echo "Target environment ${TARGET_ENVIRONMENT} does not exist. Creating it under '$PARENT_ENVIRONMENT'... "
         # Update the lookup URL in case the environment name was changed to _TEMP
         TARGET_ENV_LOOKUP_URL="${BASE_URL}/environments/?name=${TARGET_ENVIRONMENT}"
         echo "Submitting request to create environment '$TARGET_ENVIRONMENT'..."
@@ -325,14 +352,17 @@ if [ "$SKIP_CREATION" = false ]; then
 
         # Submit the creation request and run it in the background. We don't wait for it.
         # Output is redirected to /dev/null as we will poll for the result.
-        api_request "$CREATE_ENV_URL" POST "$CREATE_PAYLOAD" /dev/null &
+        api_request "$CREATE_ENV_URL" POST "$CREATE_PAYLOAD" "$CREATE_ENV_RESPONSE_FILE" >/dev/null &
 
-        # Poll for up to 10 minutes to see if the environment was created.
+        # Poll for up to 10 minutes with adaptive backoff to see if the environment was created.
         POLL_START_TIME=$SECONDS
         POLL_TIMEOUT=600  # 10 minutes
-        POLL_INTERVAL=15 # Check every 15 seconds
 
-        echo -n "Polling for creation status (up to 10 minutes) "
+        # --- Adaptive Polling Parameters ---
+        POLL_INTERVAL=5      # Initial interval in seconds
+        POLL_MAX_INTERVAL=60    # Maximum interval in seconds
+
+        echo -n "Polling for environment creation status with adaptive backoff (up to 10 minutes) "
         while :; do
             ELAPSED_TIME=$((SECONDS - POLL_START_TIME))
             if [ "$ELAPSED_TIME" -ge "$POLL_TIMEOUT" ]; then
@@ -358,6 +388,15 @@ if [ "$SKIP_CREATION" = false ]; then
             # Still waiting...
             echo -n "."
             sleep "$POLL_INTERVAL"
+
+            # --- Calculate next interval for adaptive backoff by multiplying by 1.5 (approximately) ---
+            NEXT_POLL_INTERVAL=$(( (POLL_INTERVAL * 3) / 2 ))
+
+            if [ "$NEXT_POLL_INTERVAL" -gt "$POLL_MAX_INTERVAL" ]; then
+                POLL_INTERVAL="$POLL_MAX_INTERVAL"
+            else
+                POLL_INTERVAL="$NEXT_POLL_INTERVAL"
+            fi
         done
     fi
 fi
