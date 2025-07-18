@@ -269,6 +269,8 @@ populate_target_environment() {
     jq_query='.projects | to_entries[] | .value.parameters | to_entries[] | select(.value.values[$source_env] != null and .value.values[$source_env].source == $source_env) | {defining_project: .value.project, param_name: .key, value: .value.values[$source_env].value} | @base64'
     local value_count=0
     local success_count=0
+    local skipped_matched_count=0
+    local skipped_different_count=0
     local failure_count=0
 
     # Read the base64 encoded JSON objects from jq
@@ -323,7 +325,7 @@ populate_target_environment() {
             ;;
         "skip_match")
             echo "✅ Value already exists and matches. Skipping."
-            ((success_count++))
+            ((skipped_matched_count++))
             ;;
         "skip_conflict")
             local existing_val
@@ -331,7 +333,8 @@ populate_target_environment() {
             echo "⚠️ WARNING: Parameter '$param_name' already has a different value in the target environment. Skipping update."
             echo "   Existing: '$existing_val'"
             echo "   Incoming: '$param_value'"
-            ((success_count++)) # Treat as success for now, as requested
+            ((skipped_different_count++))
+            ((failure_count++))
             ;;
         *)
             echo "🚨 An error occurred checking the parameter value. Skipping."
@@ -348,6 +351,8 @@ populate_target_environment() {
     echo "📊 Value Population Summary:"
     echo "   Total values from source environment to process: $value_count"
     echo "   ✅ Successfully set: $success_count"
+    echo "   ✅ Skipped (match): $skipped_matched_count"
+    echo "   ✅ Skipped (different): $skipped_different_count"
     echo "   🚨 Failed to set: $failure_count"
 
     if [ "$failure_count" -gt 0 ]; then
@@ -719,8 +724,10 @@ populate_target_environment
 POPULATE_STATUS=$?
 
 if [ "$POPULATE_STATUS" -ne 0 ]; then
-    echo "🚨 Errors occurred during value population. The temporary environment '$TARGET_ENVIRONMENT' has been created but may be incomplete."
-    echo "Please check the logs above. The script will now exit, and cleanup will run."
+    echo "🚨 Errors occurred during value population. The temporary environment '$TARGET_ENVIRONMENT' has been created but not all values from the source environment could be copied."
+    echo "Please check the logs above."
+    KEEP_TEMP_FILES="true"
+    echo "⚠️ Temporary files will be kept for debugging in: $TEMP_DIR"
     exit 1
 fi
 
