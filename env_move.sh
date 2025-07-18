@@ -2,6 +2,29 @@
 
 #### Functions ####
 
+usage() {
+    cat <<EOF
+Usage: $(basename "${BASH_SOURCE[0]}") [OPTIONS] <environment-to-move> <parent-environment> [profile]
+
+Moves a CloudTruth environment to a new parent. This is a destructive operation
+that is accomplished by creating a new temporary environment, copying values, deleting the original environment,
+and then setting the temporary environment name to the original source environment's name.
+
+Since this isn't a true 'move', audit history will be lost due to the source environment being deleted.
+
+A full backup snapshot is performed before any destructive changes are made.
+
+Available options:
+
+-h, --help                  Print this help and exit.
+-k, --keep-temp-files       Keep temporary files created during the script's execution.
+-r, --remove-snapshot-file  Delete the backup snapshot file upon script completion.
+-n, --dry-run               Dry run. Show what would be done without making any changes.
+-o, --output-dir <dir>      Specify output directory for the backup file. Defaults to $HOME.
+EOF
+    exit
+}
+
 # Function to perform an API request with error handling.
 # Globals:
 #   API_KEY
@@ -92,27 +115,185 @@ check_environment() {
     return 0
 }
 
-usage() {
-    cat <<EOF
-Usage: $(basename "${BASH_SOURCE[0]}") [OPTIONS] <environment-to-move> <parent-environment> [profile]
+get_project_pk_by_name() {
+    local project_name="$1"
+    local response_file="$TEMP_DIR/project_lookup_${project_name// /_}.json"
+    local lookup_url="${BASE_URL}/projects/?name=${project_name}"
 
-Moves a CloudTruth environment to a new parent. This is a destructive operation
-that is accomplished by creating a new temporary environment, copying values, deleting the original environment,
-and then setting the temporary environment name to the original source environment's name.
+    local result
+    result=$(api_request "$lookup_url" GET "" "$response_file")
+    local status
+    status=$(echo -e "$result" | head -n 1)
 
-Since this isn't a true 'move', audit history will be lost due to the source environment being deleted.
+    if [ "$status" -ne 200 ]; then
+        echo "🚨 Error looking up project '$project_name'. API status: $status" >&2
+        jq . "$response_file" >&2
+        return 1
+    fi
 
-A full backup snapshot is performed before any destructive changes are made.
+    local count
+    count=$(jq '.count' "$response_file")
+    if [ "$count" -ne 1 ]; then
+        echo "🚨 Project '$project_name' not found or ambiguous (found $count)." >&2
+        return 1
+    fi
 
-Available options:
+    jq -r '.results[0].id' "$response_file"
+}
 
--h, --help                  Print this help and exit.
--k, --keep-temp-files       Keep temporary files created during the script's execution.
--r, --remove-snapshot-file  Delete the backup snapshot file upon script completion.
--n, --dry-run               Dry run. Show what would be done without making any changes.
--o, --output-dir <dir>      Specify output directory for the backup file. Defaults to $HOME.
-EOF
-    exit
+get_parameter_pk_by_name() {
+    local project_pk="$1"
+    local parameter_name="$2"
+    local response_file="$TEMP_DIR/parameter_lookup_${project_pk}_${parameter_name// /_}.json"
+    local lookup_url="${BASE_URL}/projects/${project_pk}/parameters/?name=${parameter_name}"
+
+    local result
+    result=$(api_request "$lookup_url" GET "" "$response_file")
+    local status
+    status=$(echo -e "$result" | head -n 1)
+
+    if [ "$status" -ne 200 ]; then
+        echo "🚨 Error looking up parameter '$parameter_name' in project '$project_pk'. API status: $status" >&2
+        jq . "$response_file" >&2
+        return 1
+    fi
+
+    local count
+    count=$(jq '.count' "$response_file")
+    if [ "$count" -ne 1 ]; then
+        echo "🚨 Parameter '$parameter_name' not found or ambiguous in project '$project_pk' (found $count)." >&2
+        return 1
+    fi
+
+    jq -r '.results[0].id' "$response_file"
+}
+
+set_parameter_value() {
+    local project_pk="$1"
+    local parameter_pk="$2"
+    local env_uri="$3"
+    local value="$4"
+
+    local set_value_url="${BASE_URL}/projects/${project_pk}/parameters/${parameter_pk}/values/"
+    local payload
+    payload=$(jq -n --arg env_uri "$env_uri" --arg internal_value "$value" '{environment: $env_uri, internal_value: $internal_value}')
+    local response_file="$TEMP_DIR/set_value_response_${project_pk}_${parameter_pk}.json"
+
+    echo "Setting value for parameter '$parameter_pk' in project '$project_pk'..."
+
+    if [ "$DRY_RUN" = true ]; then
+        echo "DRY RUN: Would set value '$value' for parameter '$parameter_pk' in project '$project_pk'"
+        return 0
+    else
+        local result
+        result=$(api_request "$set_value_url" POST "$payload" "$response_file")
+        local status
+        status=$(echo -e "$result" | head -n 1)
+
+        if [ "$status" -eq 201 ]; then
+            echo "✅ Successfully set value."
+            return 0
+        else
+            echo "🚨 Error setting value for parameter '$parameter_pk'. API status: $status" >&2
+            jq . "$response_file" >&2
+            return 1
+        fi
+    fi
+}
+
+populate_target_environment() {
+    echo "---"
+    echo "📤 Populating values from '$SOURCE_ENVIRONMENT' into '$TARGET_ENVIRONMENT'..."
+
+    local target_env_uri
+    target_env_uri=$(jq -r '.results[0].url' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
+    if [ -z "$target_env_uri" ] || [ "$target_env_uri" == "null" ]; then
+        echo "🚨 Could not find URI for target environment '$TARGET_ENVIRONMENT' in '$TARGET_ENV_LOOKUP_RESPONSE_FILE'. Aborting value population." >&2
+        return 1
+    fi
+    echo "✅ Found Target Environment URI: $target_env_uri"
+
+    # This jq query extracts parameters that have explicit values set in the source environment
+    local jq_query
+    # This jq query extracts all parameter values that are set in an environment other than 'default'.
+    # These are considered "overridden" values. The shell loop will then filter for the specific
+    # source environment being moved.
+    jq_query='.projects | to_entries[] | .value.parameters | to_entries[] | . as $param_entry | .value.values | to_entries[] | select(.key != "default") | {defining_project: $param_entry.value.project, param_name: $param_entry.key, env_name: .key, value: .value.value} | @base64'
+    local value_count=0
+    local success_count=0
+    local failure_count=0
+
+    # Read the base64 encoded JSON objects from jq
+    while IFS= read -r b64_line; do
+        local json_data
+        json_data=$(echo "$b64_line" | base64 --decode)
+
+        local env_name
+        env_name=$(echo "$json_data" | jq -r '.env_name')
+
+        # Only process values from the environment we are moving.
+        if [ "$env_name" != "$SOURCE_ENVIRONMENT" ]; then
+            continue
+        fi
+
+        ((value_count++))
+        local defining_project
+        defining_project=$(echo "$json_data" | jq -r '.defining_project')
+        local param_name
+        param_name=$(echo "$json_data" | jq -r '.param_name')
+        local param_value
+        param_value=$(echo "$json_data" | jq -r '.value')
+
+        echo -e "\nProcessing: Project '$defining_project' -> Parameter '$param_name' for environment '$env_name'"
+
+        local project_pk
+        project_pk=$(get_project_pk_by_name "$defining_project")
+        if [ $? -ne 0 ]; then
+            echo "🚨 Failed to get PK for project '$defining_project'. Skipping parameter."
+            ((failure_count++))
+            continue
+        fi
+
+        local param_pk
+        param_pk=$(get_parameter_pk_by_name "$project_pk" "$param_name")
+        if [ $? -ne 0 ]; then
+            echo "🚨 Failed to get PK for parameter '$param_name' in project '$defining_project'. Skipping parameter."
+            ((failure_count++))
+            continue
+        fi
+
+        if [ "$DRY_RUN" = true ]; then
+            echo "DRY RUN: Would set value '$param_value' for parameter '$param_name' in project '$defining_project'"
+            ((success_count++))
+            continue
+        else
+            set_parameter_value "$project_pk" "$param_pk" "$target_env_uri" "$param_value"
+            if [ $? -eq 0 ]; then
+                ((success_count++))
+            else
+                ((failure_count++))
+            fi
+        fi
+
+    done < <(jq -r "$jq_query" "$GLOBAL_BACKUP_FILE")
+
+    if [ "$value_count" -eq 0 ]; then
+        echo "✅ No explicit override values found in '$SOURCE_ENVIRONMENT' to copy."
+    fi
+
+    echo "---"
+    echo "📊 Value Population Summary:"
+    echo "   Total values from source environment to process: $value_count"
+    echo "   ✅ Successfully set: $success_count"
+    echo "   🚨 Failed to set: $failure_count"
+
+    if [ "$failure_count" -gt 0 ]; then
+        echo "⚠️ Some values could not be populated. Please review the errors above."
+        return 1
+    else
+        echo "🎉 All values populated successfully."
+        return 0
+    fi
 }
 
 #### MAIN ####
@@ -471,8 +652,13 @@ if [ "$SKIP_CREATION" = false ]; then
     fi
 fi
 
-echo
-echo "---"
-echo "Next step: Populate values for the environment '$TARGET_ENVIRONMENT' (logic to be added)."
+populate_target_environment
+POPULATE_STATUS=$?
+
+if [ "$POPULATE_STATUS" -ne 0 ]; then
+    echo "🚨 Errors occurred during value population. The temporary environment '$TARGET_ENVIRONMENT' has been created but may be incomplete."
+    echo "Please check the logs above. The script will now exit, and cleanup will run."
+    exit 1
+fi
 
 exit 0
