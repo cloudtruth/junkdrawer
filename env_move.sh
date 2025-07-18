@@ -201,6 +201,56 @@ set_parameter_value() {
     fi
 }
 
+# Function to check if a parameter value already exists and if it matches.
+# Arguments:
+#   1: project_pk
+#   2: parameter_pk
+#   3: env_uri
+#   4: value_to_set
+# Returns:
+#   A string indicating the status: "create", "skip_match", or "skip_conflict|EXISTING_VALUE"
+#   On API error, it will echo an error message to stderr and return with a non-zero status.
+check_existing_parameter_value() {
+    local project_pk="$1"
+    local parameter_pk="$2"
+    local env_uri="$3"
+    local value_to_set="$4"
+
+    local values_url="${BASE_URL}/projects/${project_pk}/parameters/${parameter_pk}/values/"
+    local get_values_response_file="$TEMP_DIR/get_values_response_${project_pk}_${parameter_pk}.json"
+
+    # 1. Get existing values for the parameter.
+    local get_result
+    get_result=$(api_request "$values_url" GET "" "$get_values_response_file")
+    local get_status
+    get_status=$(echo -e "$get_result" | head -n 1)
+
+    if [ "$get_status" -ne 200 ]; then
+        echo "🚨 Error getting existing values for parameter '$parameter_pk'. API status: $get_status" >&2
+        jq . "$get_values_response_file" >&2
+        return 1
+    fi
+
+    # 2. Use jq to find the existing value for the target environment
+    local existing_value_json
+    existing_value_json=$(jq -r --arg env_uri "$env_uri" '.results[] | select(.environment == $env_uri)' "$get_values_response_file")
+
+    # 3. Logic based on whether a value exists
+    if [ -n "$existing_value_json" ]; then
+        local existing_value
+        existing_value=$(echo "$existing_value_json" | jq -r '.internal_value')
+
+        if [ "$existing_value" == "$value_to_set" ]; then
+            echo "skip_match"
+        else
+            echo "skip_conflict|${existing_value}"
+        fi
+    else
+        # No value exists, so it needs to be created.
+        echo "create"
+    fi
+}
+
 populate_target_environment() {
     echo "---"
     echo "📤 Populating values from '$SOURCE_ENVIRONMENT' into '$TARGET_ENVIRONMENT'..."
@@ -213,30 +263,20 @@ populate_target_environment() {
     fi
     echo "✅ Found Target Environment URI: $target_env_uri"
 
-    # This jq query extracts parameters that have explicit values set in the source environment
+    # This jq query extracts parameters that have explicit override values set in the source environment.
+    # It's more efficient to filter in jq than in the shell loop.
     local jq_query
-    # This jq query extracts all parameter values that are set in an environment other than 'default'.
-    # These are considered "overridden" values. The shell loop will then filter for the specific
-    # source environment being moved.
-    jq_query='.projects | to_entries[] | .value.parameters | to_entries[] | . as $param_entry | .value.values | to_entries[] | select(.key != "default") | {defining_project: $param_entry.value.project, param_name: $param_entry.key, env_name: .key, value: .value.value} | @base64'
+    jq_query='.projects | to_entries[] | .value.parameters | to_entries[] | select(.value.values[$source_env] != null and .value.values[$source_env].source == $source_env) | {defining_project: .value.project, param_name: .key, value: .value.values[$source_env].value} | @base64'
     local value_count=0
     local success_count=0
     local failure_count=0
 
     # Read the base64 encoded JSON objects from jq
     while IFS= read -r b64_line; do
+        ((value_count++))
         local json_data
         json_data=$(echo "$b64_line" | base64 --decode)
 
-        local env_name
-        env_name=$(echo "$json_data" | jq -r '.env_name')
-
-        # Only process values from the environment we are moving.
-        if [ "$env_name" != "$SOURCE_ENVIRONMENT" ]; then
-            continue
-        fi
-
-        ((value_count++))
         local defining_project
         defining_project=$(echo "$json_data" | jq -r '.defining_project')
         local param_name
@@ -244,7 +284,7 @@ populate_target_environment() {
         local param_value
         param_value=$(echo "$json_data" | jq -r '.value')
 
-        echo -e "\nProcessing: Project '$defining_project' -> Parameter '$param_name' for environment '$env_name'"
+        echo -e "\nProcessing: Project '$defining_project' -> Parameter '$param_name'"
 
         local project_pk
         project_pk=$(get_project_pk_by_name "$defining_project")
@@ -262,20 +302,43 @@ populate_target_environment() {
             continue
         fi
 
-        if [ "$DRY_RUN" = true ]; then
-            echo "DRY RUN: Would set value '$param_value' for parameter '$param_name' in project '$defining_project'"
-            ((success_count++))
-            continue
-        else
-            set_parameter_value "$project_pk" "$param_pk" "$target_env_uri" "$param_value"
-            if [ $? -eq 0 ]; then
+        local check_result
+        check_result=$(check_existing_parameter_value "$project_pk" "$param_pk" "$target_env_uri" "$param_value")
+        local check_status
+        check_status=$(echo "$check_result" | cut -d'|' -f1)
+
+        case "$check_status" in
+        "create")
+            if [ "$DRY_RUN" = true ]; then
+                echo "DRY RUN: Would set value for parameter '$param_name'."
                 ((success_count++))
             else
-                ((failure_count++))
+                set_parameter_value "$project_pk" "$param_pk" "$target_env_uri" "$param_value"
+                if [ $? -eq 0 ]; then
+                    ((success_count++))
+                else
+                    ((failure_count++))
+                fi
             fi
-        fi
-
-    done < <(jq -r "$jq_query" "$GLOBAL_BACKUP_FILE")
+            ;;
+        "skip_match")
+            echo "✅ Value already exists and matches. Skipping."
+            ((success_count++))
+            ;;
+        "skip_conflict")
+            local existing_val
+            existing_val=$(echo "$check_result" | cut -d'|' -f2-)
+            echo "⚠️ WARNING: Parameter '$param_name' already has a different value in the target environment. Skipping update."
+            echo "   Existing: '$existing_val'"
+            echo "   Incoming: '$param_value'"
+            ((success_count++)) # Treat as success for now, as requested
+            ;;
+        *)
+            echo "🚨 An error occurred checking the parameter value. Skipping."
+            ((failure_count++))
+            ;;
+        esac
+    done < <(jq -r --arg source_env "$SOURCE_ENVIRONMENT" "$jq_query" "$GLOBAL_BACKUP_FILE")
 
     if [ "$value_count" -eq 0 ]; then
         echo "✅ No explicit override values found in '$SOURCE_ENVIRONMENT' to copy."
