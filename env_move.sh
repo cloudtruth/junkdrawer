@@ -94,18 +94,23 @@ check_environment() {
 
 usage() {
     cat <<EOF
-Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-k] [-d] [-s] <environment-to-move> <parent-environment> [profile]
+Usage: $(basename "${BASH_SOURCE[0]}") [OPTIONS] <environment-to-move> <parent-environment> [profile]
 
 Moves a CloudTruth environment to a new parent. This is a destructive operation
-that is accomplished by creating a new temporary environment, copying values,
-and then renaming. A full backup is performed before any changes are made.
+that is accomplished by creating a new temporary environment, copying values, deleting the original environment,
+and then setting the temporary environment name to the original source environment's name.
+
+Since this isn't a true 'move', audit history will be lost due to the source environment being deleted.
+
+A full backup snapshot is performed before any destructive changes are made.
 
 Available options:
 
--h          Print this help and exit.
--k          Keep temporary files created during the script's execution.
--d          Delete the backup snapshot file upon script completion.
--s          Dry run. Show what would be done without making any changes.
+-h, --help                  Print this help and exit.
+-k, --keep-temp-files       Keep temporary files created during the script's execution.
+-r, --remove-snapshot-file  Delete the backup snapshot file upon script completion.
+-n, --dry-run               Dry run. Show what would be done without making any changes.
+-o, --output-dir <dir>      Specify output directory for the backup file. Defaults to $HOME.
 EOF
     exit
 }
@@ -115,31 +120,47 @@ EOF
 # --- Argument Parsing ---
 # Initialize variables for options
 KEEP_TEMP_FILES="false"
-DELETE_SNAPSHOT_FILE="false"
+REMOVE_SNAPSHOT_FILE="false"
 DRY_RUN="false"
+SNAPSHOT_OUTPUT_DIR="$HOME" # default output directory
 
 # Use getopts to parse command-line arguments
-while getopts ":hkds" opt; do
-    case "$opt" in
-    h)
+while (($# > 0)); do
+    case "$1" in
+    -h | --help)
         usage
         ;;
-    k)
+    -k | --keep-temp-files)
         KEEP_TEMP_FILES="true"
+        shift
         ;;
-    d)
-        DELETE_SNAPSHOT_FILE="true"
+    -r | --remove-snapshot-file)
+        REMOVE_SNAPSHOT_FILE="true"
+        shift
         ;;
-    s)
+    -n | --dry-run)
         DRY_RUN="true"
+        shift
         ;;
-    \?)
+    -o | --output-dir)
+        if [ -n "$2" ]; then
+            SNAPSHOT_OUTPUT_DIR="$2"
+            if [ ! -d "$SNAPSHOT_OUTPUT_DIR" ]; then
+                echo "🚨 Error: Invalid output directory '$SNAPSHOT_OUTPUT_DIR'." >&2
+                exit 1
+            fi
+            shift 2
+        else
+            echo "🚨 Error: Option -$1 requires an argument. Use -h for help." >&2
+            exit 1
+        fi
+        ;;
+    -?*)
         echo "🚨 Error: Invalid option: -$OPTARG. Use -h for help." >&2
         exit 1
         ;;
-    :)
-        echo "🚨 Error: Option -$OPTARG requires an argument. Use -h for help." >&2
-        exit 1
+    *)
+        break
         ;;
     esac
 done
@@ -265,30 +286,37 @@ echo "Found API key for profile '$PROFILE'."
 # Construct the base URL.
 BASE_URL="https://api.cloudtruth.io/api/v1"
 
-# --- Temporary File Management ---
-# Define human-readable names for temporary files in the current directory.
-GLOBAL_BACKUP_FILE="cloudtruth_snapshot.json"
-PARENT_ENV_LOOKUP_RESPONSE_FILE="parent_env_lookup_api_response.json"
-CREATE_ENV_RESPONSE_FILE="create_env_api_response.json"
-SOURCE_ENV_LOOKUP_RESPONSE_FILE="source_env_lookup_api_response.json"
-TARGET_ENV_LOOKUP_RESPONSE_FILE="target_env_lookup_api_response.json"
+# --- Secure Temporary File Handling ---
+# Create a secure temporary directory
+TEMP_DIR=$(mktemp -d)
+if [ ! -d "$TEMP_DIR" ]; then
+    echo "🚨 Error: Failed to create a temporary directory."
+    exit 1
+fi
+echo "Created temporary directory: $TEMP_DIR to store temporary files created by this script."
+
+# Define temporary file names and their full paths
+GLOBAL_BACKUP_FILE="$SNAPSHOT_OUTPUT_DIR/cloudtruth_snapshot.json"
+PARENT_ENV_LOOKUP_RESPONSE_FILE="$TEMP_DIR/parent_env_lookup_api_response.json"
+CREATE_ENV_RESPONSE_FILE="$TEMP_DIR/create_env_api_response.json"
+SOURCE_ENV_LOOKUP_RESPONSE_FILE="$TEMP_DIR/source_env_lookup_api_response.json"
+TARGET_ENV_LOOKUP_RESPONSE_FILE="$TEMP_DIR/target_env_lookup_api_response.json"
 
 TEMP_FILES="$PARENT_ENV_LOOKUP_RESPONSE_FILE $CREATE_ENV_RESPONSE_FILE $SOURCE_ENV_LOOKUP_RESPONSE_FILE $TARGET_ENV_LOOKUP_RESPONSE_FILE"
 
 if [ "$KEEP_TEMP_FILES" = true ]; then
-    echo "🧹 Option --keep-temp-files was used, ${TEMP_FILES} will be kept"
-    TEMP_FILES=""
+    echo "🧹 Option --keep-temp-files was used, temporary files will be kept and are located in $TEMP_DIR."
 fi
 
-if [ "$DELETE_SNAPSHOT_FILE" = true ]; then
-    echo "🧹 Option --delete-snapshot-file was used, deleting the snapshot file when the script exits"
-    TEMP_FILES="$GLOBAL_BACKUP_FILE $TEMP_FILES"
+if [ "$REMOVE_SNAPSHOT_FILE" = true ]; then
+    echo "🧹 Option --delete-snapshot-file was used, deleting the snapshot file upon script completion."
+    TEMP_FILES+=" $GLOBAL_BACKUP_FILE"
 fi
 
 cleanup() {
     if [ "$KEEP_TEMP_FILES" = false ]; then
-        echo "🧹 Cleaning up temporary files: $TEMP_FILES"
-        rm -f $TEMP_FILES
+        echo "🧹 Cleaning up; removing the temporary directory $TEMP_DIR"
+        rm -rf "$TEMP_DIR"
     fi
 
     unset API_KEY
