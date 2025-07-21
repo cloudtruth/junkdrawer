@@ -31,10 +31,11 @@ TMP_FILE=""
 # Ensure the temp file is cleaned up on script exit (success, error, or interrupt).
 trap '[[ -n "$TMP_FILE" ]] && rm -f "$TMP_FILE"' EXIT
 
+# Declare LOG_FILE globally, will be defined after arg parsing.
+LOG_FILE=""
+
 # --- Configuration ---
 SERVER_URL="${CLOUDTRUTH_SERVER_URL:-https://api.cloudtruth.io}"
-WAIT_SECONDS=5
-
 # Declare global associative arrays for project data.
 declare -A project_ids project_names project_parents project_children
 
@@ -42,8 +43,10 @@ declare -A project_ids project_names project_parents project_children
 
 # Print usage information and exit.
 usage() {
-    echo "Usage: $0 [--dry-run] <PARTIAL_PROJECT_NAME>" >&2
+    echo "Usage: $0 [--dry-run] [--log-file <path>] <PARTIAL_PROJECT_NAME>" >&2
     echo "  --dry-run: Show what would be deleted without actually deleting." >&2
+    echo "  --log-file: Specify a path for the deletion log file." >&2
+    echo "              Defaults to \$HOME/project_deletion_<timestamp>.log" >&2
     echo "  Example: $0 --dry-run project-count-limits" >&2
     exit 1
 }
@@ -52,21 +55,63 @@ usage() {
 # Exits on non-200 status codes.
 api_get() {
     local url="$1"
-    curl -s -f -X GET \
+    local response
+    local http_code
+    local body
+
+    response=$(curl -s -w "\n%{http_code}" -X GET \
         -H "Authorization: Api-Key ${CLOUDTRUTH_API_KEY}" \
         -H "Content-Type: application/json" \
-        "$url"
+        "$url")
+
+    http_code=$(tail -n1 <<<"$response")
+    body=$(sed '$d' <<<"$response")
+
+    if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
+        echo "$body"
+        return 0
+    else
+        # On failure, print the error to stderr and return the failure code.
+        echo -e "\nAPI GET Error (HTTP ${http_code}) for URL ${url}:" >&2
+        if command -v jq &>/dev/null && jq -e . >/dev/null 2>&1 <<<"$body"; then
+            echo "$body" | jq . >&2
+        else
+            echo "$body" >&2
+        fi
+        return 1
+    fi
 }
 
 # Helper for making authenticated API DELETE requests.
 api_delete() {
     local url="$1"
-    # We don't want to see the progress meter, but we do want errors.
-    # -f makes curl fail silently on HTTP errors, which we check via the exit code.
-    curl -s -f -X DELETE \
+    local response
+    local http_code
+
+    # Make the curl request, capturing the response body and appending the HTTP status code.
+    response=$(curl -s -w "\n%{http_code}" -X DELETE \
         -H "Authorization: Api-Key ${CLOUDTRUTH_API_KEY}" \
         -H "Content-Type: application/json" \
-        "$url"
+        "$url")
+
+    # Extract the HTTP status code from the response.
+    http_code=$(tail -n1 <<<"$response")
+
+    if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
+        return 0
+    else
+        # On failure, extract the response body (everything except the HTTP status code)).
+        local body
+        body=$(sed '$d' <<<"$response")
+        echo -e "\nAPI DELETE Error (HTTP ${http_code}) for URL ${url}" >&2
+        # Try to pretty-print if it's JSON, otherwise print as is.
+        if command -v jq &>/dev/null && jq -e . >/dev/null 2>&1 <<<"$body"; then
+            echo "$body" | jq . >&2
+        else
+            echo "$body" >&2
+        fi
+        return 1
+    fi
 }
 
 # Fetches all projects from the API, handling pagination.
@@ -79,15 +124,9 @@ get_all_projects_json() {
     while [[ -n "$next_url" && "$next_url" != "null" ]]; do
         echo -n "." >&2
         local response
-        # Capture response and handle potential empty result from curl -f on error.
-        # The `|| true` prevents `set -e` from exiting the script on a curl failure,
-        # allowing our custom error handling to take over.
-        response=$(api_get "$next_url" || true)
-        if [[ -z "$response" ]]; then
-            echo " error!" >&2
-            echo "Error: API call to ${next_url} failed or returned an empty response. Please check your CLOUDTRUTH_API_KEY, CLOUDTRUTH_SERVER_URL, and network connection." >&2
-            exit 1
-        fi
+        # The api_get function now handles errors and prints details.
+        # `set -e` will cause the script to exit if the call fails.
+        response=$(api_get "$next_url")
         all_projects=$(jq -s '.[0] + .[1].results' <(echo "$all_projects") <(echo "$response"))
         next_url=$(echo "$response" | jq -r '.next')
     done
@@ -106,11 +145,16 @@ get_all_descendants() {
         return
     fi
 
-    # Use a while-read loop to safely handle names with spaces or other special characters.
-    while IFS= read -r child; do
-        # The check for -n ensures we don't process empty lines.
+    # Use a `for` loop with a modified IFS to iterate over the newline-separated
+    # list of children. This is a robust way to handle the list and avoids
+    # potential issues with nested `while read` loops.
+    local old_ifs="$IFS"
+    IFS=$'\n'
+    # The expansion must be unquoted to allow word splitting by IFS.
+    for child in $children_string; do
         [[ -n "$child" ]] && echo "$child" && get_all_descendants "$child"
-    done <<<"$children_string"
+    done
+    IFS="$old_ifs"
 }
 
 # Calculates the depth of a project in the hierarchy (0 for root projects).
@@ -126,23 +170,54 @@ get_depth() {
     echo "$depth"
 }
 
-# Encapsulates the logic to fetch, map, find, and sort all projects for deletion.
-# It populates the global `project_ids` map (as a side-effect) for use in the
-# deletion loop and populates the `sorted_projects_for_deletion` global array
-# with the final, sorted list of projects.
-prepare_deletion_list() {
-    local partial_name="$1"
+# Polls the API to confirm a project has been fully deleted.
+# This function waits until a GET request for the project ID returns a 404 error.
+#
+# Usage: wait_for_project_deletion <project_id>
+wait_for_project_deletion() {
+    local project_id="$1"
+    local max_wait_seconds=60
+    local poll_interval_seconds=5
+    local elapsed_seconds=0
 
-    # Fetch all projects and build dependency maps
+    echo -n "  Waiting for project '$project_id' to be fully deleted..." >&2
+
+    while [[ $elapsed_seconds -lt $max_wait_seconds ]]; do
+        local http_code
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Api-Key ${CLOUDTRUTH_API_KEY}" "$SERVER_URL/api/v1/projects/${project_id}/")
+        if [[ "$http_code" -eq 404 ]]; then
+            echo " confirmed." >&2
+            return 0 # Success, project is gone.
+        fi
+
+        echo -n "." >&2
+        sleep "$poll_interval_seconds"
+        elapsed_seconds=$((elapsed_seconds + poll_interval_seconds))
+    done
+
+    echo " timeout!" >&2
+    echo "Warning: Timed out after ${max_wait_seconds}s waiting for project '$project_id' to be deleted. Subsequent deletions may fail." >&2
+}
+
+# Fetches all project data and populates the global dependency maps.
+# This function modifies the following global associative arrays:
+# - project_ids
+# - project_names
+# - project_parents
+# - project_children
+build_dependency_maps() {
     local all_projects_json
     all_projects_json=$(get_all_projects_json)
 
     local total_projects_found
     total_projects_found=$(echo "$all_projects_json" | jq 'length')
     if [[ "$total_projects_found" -eq 0 ]]; then
+        # The get_all_projects_json function handles API errors, so this means
+        # the API key is valid but has access to an org with no projects.
         echo "API query successful, but found 0 projects for this API key." >&2
         echo "Please verify that the CLOUDTRUTH_API_KEY has access to the correct organization." >&2
-        return # Return with no output
+        # Exit here because there's nothing more to do.
+        exit 0
     fi
     echo "Found a total of $total_projects_found projects. Building dependency map..." >&2
 
@@ -154,46 +229,13 @@ prepare_deletion_list() {
 
     # Pass 2: Build parent -> child relationship maps now that all names are known.
     while IFS=$'\t' read -r name parent_id; do
+        # Only proceed if we have a valid parent_id that exists in our name map.
         if [[ -n "$parent_id" && "$parent_id" != "null" && ${project_names[$parent_id]+_} ]]; then
             local parent_name="${project_names[$parent_id]}"
             project_parents["$name"]="$parent_name"
-            # Use a newline delimiter for robustness; handles names with spaces.
             project_children["$parent_name"]+="${name}"$'\n'
         fi
     done < <(echo "$all_projects_json" | jq -r '.[] | "\(.name)\t\(if .depends_on then (.depends_on | split("/")[-2]) else "null" end)"' | tr -d '\r')
-
-    # Find all projects to delete
-    echo "Finding projects to delete..." >&2
-    local -A projects_to_delete
-
-    # 1. Identify the "highest-level" projects that match the search term.
-    local -a root_projects_for_deletion
-    for proj_name in "${!project_ids[@]}"; do
-        if [[ "$proj_name" == *"$partial_name"* ]]; then
-            local parent_name="${project_parents[$proj_name]:-}"
-            if [[ -z "$parent_name" || "$parent_name" != *"$partial_name"* ]]; then
-                root_projects_for_deletion+=("$proj_name")
-            fi
-        fi
-    done
-
-    # 2. For each root, add it and all its descendants to the final deletion list.
-    for root_proj in "${root_projects_for_deletion[@]}"; do
-        projects_to_delete["$root_proj"]=1
-        while read -r descendant; do
-            projects_to_delete["$descendant"]=1
-        done < <(get_all_descendants "$root_proj")
-    done
-
-    # Prepare and sort the final list
-    local -a unsorted_list
-    for proj in "${!projects_to_delete[@]}"; do
-        unsorted_list+=("$(get_depth "$proj")|${proj}")
-    done
-
-    # Sort the list and populate the global `sorted_projects_for_deletion` array.
-    # Using mapfile is safer than word-splitting the output of sort.
-    mapfile -t sorted_projects_for_deletion < <(printf "%s\n" "${unsorted_list[@]}" | sort -t'|' -k1,1nr -k2,2)
 }
 
 # --- Main Script ---
@@ -215,6 +257,7 @@ fi
 # Parse arguments
 DRY_RUN=false
 PARTIAL_PROJECT_NAME=""
+LOG_FILE_PATH=""
 
 # Robust argument parsing loop allows options in any order.
 while [[ $# -gt 0 ]]; do
@@ -223,6 +266,14 @@ while [[ $# -gt 0 ]]; do
     --dry-run)
         DRY_RUN=true
         shift # past argument
+        ;;
+    --log-file)
+        if [[ -z "${2:-}" ]]; then
+            echo "Error: --log-file option requires an argument." >&2
+            usage
+        fi
+        LOG_FILE_PATH="$2"
+        shift 2 # past argument and value
         ;;
     *) # Anything else is treated as the project name.
         if [[ -n "$PARTIAL_PROJECT_NAME" ]]; then
@@ -240,10 +291,53 @@ if [[ -z "$PARTIAL_PROJECT_NAME" ]]; then
     usage
 fi
 
+# Set up the log file path.
+if [[ -n "$LOG_FILE_PATH" ]]; then
+    LOG_FILE="$LOG_FILE_PATH"
+else
+    # Default to the user's home directory with a timestamped name.
+    LOG_FILE="${HOME}/project_deletion_$(date +%Y%m%d_%H%M%S).log"
+fi
+
 # Call the main logic function and capture its output into an array.
 declare -a sorted_projects_for_deletion
-# This function is called directly to populate the global arrays, including `sorted_projects_for_deletion`.
-prepare_deletion_list "$PARTIAL_PROJECT_NAME"
+
+# Build the dependency maps. This function populates the global project_* arrays.
+build_dependency_maps
+
+# --- Find and Sort Projects for Deletion ---
+
+echo "Finding projects to delete..." >&2
+declare -A projects_to_delete
+
+# 1. Identify the "highest-level" projects that match the search term.
+declare -a root_projects_for_deletion
+for proj_name in "${!project_ids[@]}"; do
+    if [[ "$proj_name" == *"$PARTIAL_PROJECT_NAME"* ]]; then
+        parent_name="${project_parents[$proj_name]:-}"
+        if [[ -z "$parent_name" || "$parent_name" != *"$PARTIAL_PROJECT_NAME"* ]]; then
+            root_projects_for_deletion+=("$proj_name")
+        fi
+    fi
+done
+
+# 2. For each root, add it and all its descendants to the final deletion list.
+for root_proj in "${root_projects_for_deletion[@]}"; do
+    projects_to_delete["$root_proj"]=1
+    while read -r descendant; do
+        projects_to_delete["$descendant"]=1
+    done < <(get_all_descendants "$root_proj")
+done
+
+# 3. Prepare and sort the final list
+declare -a unsorted_list
+for proj in "${!projects_to_delete[@]}"; do
+    unsorted_list+=("$(get_depth "$proj")|${proj}")
+done
+
+# 4. Sort the list and populate the final `sorted_projects_for_deletion` array.
+mapfile -t sorted_projects_for_deletion < <(printf "%s\n" "${unsorted_list[@]}" | sort -t'|' -k1,1nr -k2,2)
+
 
 count=${#sorted_projects_for_deletion[@]}
 
@@ -303,6 +397,8 @@ else
         echo -n "Deleting project: '$project_name' (ID: $project_id)... "
         if api_delete "${SERVER_URL}/api/v1/projects/${project_id}/"; then
             echo "Success."
+            # Log the successful deletion with a timestamp for auditing.
+            echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') DELETED: Name='$project_name', ID='$project_id'" >> "$LOG_FILE"
             deleted_count=$((deleted_count + 1))
         else
             echo "ERROR: Failed to delete project '$project_name'. Halting script." >&2
@@ -310,12 +406,14 @@ else
             exit 1
         fi
 
+        # Don't poll after the very last deletion.
         if [[ $deleted_count -lt $count ]]; then
-            echo "Waiting for $WAIT_SECONDS seconds..."
-            sleep "$WAIT_SECONDS"
+            wait_for_project_deletion "$project_id"
         fi
     done
-    echo "All $count projects have been deleted."
+    echo
+    echo "All $count projects have been successfully deleted."
+    echo "A log of all deleted projects has been saved to: $LOG_FILE"
 fi
 
 exit 0
