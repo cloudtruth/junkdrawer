@@ -36,6 +36,8 @@ LOG_FILE=""
 
 # --- Configuration ---
 SERVER_URL="${CLOUDTRUTH_SERVER_URL:-https://api.cloudtruth.io}"
+API_LAST_HTTP_CODE=0
+
 # Declare global associative arrays for project data.
 declare -A project_ids project_names project_parents project_children
 
@@ -59,6 +61,8 @@ api_get() {
     local http_code
     local body
 
+    API_LAST_HTTP_CODE=0
+
     response=$(curl -s -w "\n%{http_code}" -X GET \
         -H "Authorization: Api-Key ${CLOUDTRUTH_API_KEY}" \
         -H "Content-Type: application/json" \
@@ -66,6 +70,7 @@ api_get() {
 
     http_code=$(tail -n1 <<<"$response")
     body=$(sed '$d' <<<"$response")
+    API_LAST_HTTP_CODE="$http_code"
 
     if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
         echo "$body"
@@ -88,6 +93,8 @@ api_delete() {
     local response
     local http_code
 
+    API_LAST_HTTP_CODE=0
+
     # Make the curl request, capturing the response body and appending the HTTP status code.
     response=$(curl -s -w "\n%{http_code}" -X DELETE \
         -H "Authorization: Api-Key ${CLOUDTRUTH_API_KEY}" \
@@ -96,6 +103,7 @@ api_delete() {
 
     # Extract the HTTP status code from the response.
     http_code=$(tail -n1 <<<"$response")
+    API_LAST_HTTP_CODE="$http_code"
 
     if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
         return 0
@@ -227,6 +235,52 @@ wait_for_deletion_confirmation() {
     echo " timeout!" >&2
     echo "Warning: Timed out after ${max_wait_seconds}s waiting for deletion of '$child_name' to be confirmed. Subsequent deletions may fail." >&2
 }
+
+# Attempts to delete a project, with a specific retry mechanism for 409 Conflict errors.
+# This handles eventual consistency issues on the backend.
+#
+# Usage: attempt_delete_with_retry <project_name> <project_id>
+attempt_delete_with_retry() {
+    local project_name="$1"
+    local project_id="$2"
+    local max_retries=5
+    local retry_delay=3
+    local project_url="${SERVER_URL}/api/v1/projects/${project_id}/"
+
+    echo -n "Deleting project: '$project_name' (ID: $project_id)... "
+
+    # Initial attempt
+    if api_delete "$project_url"; then
+        echo "Success."
+        return 0
+    fi
+
+    # Initial attempt failed. Check if it's a retryable 409 error.
+    if [[ "$API_LAST_HTTP_CODE" -ne 409 ]]; then
+        # Not a 409, so it's a hard failure. Error was already printed by api_delete.
+        return 1
+    fi
+
+    # It was a 409, so we begin retrying.
+    for ((i = 1; i <= max_retries; i++)); do
+        echo # Newline for readability
+        echo -n "  Project is still locked by dependencies. Retrying in ${retry_delay}s (${i}/${max_retries})... "
+        sleep "$retry_delay"
+        if api_delete "$project_url"; then
+            echo "Success."
+            return 0
+        fi
+    done
+
+    # If the loop finishes, all retries have failed.
+    return 1
+}
+
+# Fetches all project data and populates the global dependency maps.
+# This function modifies the following global associative arrays:
+# - project_ids
+
+
 
 # Fetches all project data and populates the global dependency maps.
 # This function modifies the following global associative arrays:
@@ -423,14 +477,12 @@ else
     for item in "${sorted_projects_for_deletion[@]}"; do
         project_name="${item#*|}"
         project_id="${project_ids[$project_name]}"
-        echo -n "Deleting project: '$project_name' (ID: $project_id)... "
-        if api_delete "${SERVER_URL}/api/v1/projects/${project_id}/"; then
-            echo "Success."
+        if attempt_delete_with_retry "$project_name" "$project_id"; then
             # Log the successful deletion with a timestamp for auditing.
             echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') DELETED: Name='$project_name', ID='$project_id'" >> "$LOG_FILE"
             deleted_count=$((deleted_count + 1))
         else
-            echo "ERROR: Failed to delete project '$project_name'. Halting script." >&2
+            echo "ERROR: Failed to delete project '$project_name' after multiple attempts. Halting script." >&2
             echo "  $deleted_count projects were deleted before this failure." >&2
             exit 1
         fi
