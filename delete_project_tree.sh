@@ -171,32 +171,61 @@ get_depth() {
 }
 
 # Polls the API to confirm a project has been fully deleted.
-# This function waits until a GET request for the project ID returns a 404 error.
+# If the project has a parent, it polls the parent until the child is no longer
+# listed as a dependency. If it has no parent, it polls the project's own
+# endpoint until it returns a 404.
 #
-# Usage: wait_for_project_deletion <project_id>
-wait_for_project_deletion() {
-    local project_id="$1"
+# Usage: wait_for_deletion_confirmation <child_id> <child_name> [parent_id]
+wait_for_deletion_confirmation() {
+    local child_id="$1"
+    local child_name="$2"
+    local parent_id="${3:-}"
     local max_wait_seconds=60
-    local poll_interval_seconds=5
+    local poll_interval_seconds=2
     local elapsed_seconds=0
 
-    echo -n "  Waiting for project '$project_id' to be fully deleted..." >&2
+    if [[ -n "$parent_id" ]]; then
+        # --- Poll parent's 'dependents' list ---
+        local child_url="${SERVER_URL}/api/v1/projects/${child_id}/"
+        echo -n "  Waiting for '$child_name' to be removed from parent's dependencies..." >&2
 
-    while [[ $elapsed_seconds -lt $max_wait_seconds ]]; do
-        local http_code
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Api-Key ${CLOUDTRUTH_API_KEY}" "$SERVER_URL/api/v1/projects/${project_id}/")
-        if [[ "$http_code" -eq 404 ]]; then
-            echo " confirmed." >&2
-            return 0 # Success, project is gone.
-        fi
+        while [[ $elapsed_seconds -lt $max_wait_seconds ]]; do
+            local parent_response
+            # Use api_get and check its exit code.
+            if ! parent_response=$(api_get "${SERVER_URL}/api/v1/projects/${parent_id}/"); then
+                # If the parent is gone (404), the dependency is implicitly gone too.
+                echo " confirmed (parent disappeared)." >&2
+                return 0
+            fi
 
-        echo -n "." >&2
-        sleep "$poll_interval_seconds"
-        elapsed_seconds=$((elapsed_seconds + poll_interval_seconds))
-    done
+            # Check if the child URL is still in the dependents list.
+            if ! echo "$parent_response" | jq -e --arg child_url "$child_url" '.dependents | any(. == $child_url)' >/dev/null; then
+                echo " confirmed." >&2
+                return 0
+            fi
+
+            echo -n "." >&2
+            sleep "$poll_interval_seconds"
+            elapsed_seconds=$((elapsed_seconds + poll_interval_seconds))
+        done
+    else
+        # --- Poll for project to 404 (for root projects) ---
+        echo -n "  Waiting for project '$child_name' to be fully deleted..." >&2
+        while [[ $elapsed_seconds -lt $max_wait_seconds ]]; do
+            local http_code
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Api-Key ${CLOUDTRUTH_API_KEY}" "${SERVER_URL}/api/v1/projects/${child_id}/")
+            if [[ "$http_code" -eq 404 ]]; then
+                echo " confirmed." >&2
+                return 0 # Success, project is gone.
+            fi
+            echo -n "." >&2
+            sleep "$poll_interval_seconds"
+            elapsed_seconds=$((elapsed_seconds + poll_interval_seconds))
+        done
+    fi
 
     echo " timeout!" >&2
-    echo "Warning: Timed out after ${max_wait_seconds}s waiting for project '$project_id' to be deleted. Subsequent deletions may fail." >&2
+    echo "Warning: Timed out after ${max_wait_seconds}s waiting for deletion of '$child_name' to be confirmed. Subsequent deletions may fail." >&2
 }
 
 # Fetches all project data and populates the global dependency maps.
@@ -408,7 +437,13 @@ else
 
         # Don't poll after the very last deletion.
         if [[ $deleted_count -lt $count ]]; then
-            wait_for_project_deletion "$project_id"
+            # Find the parent's ID to pass to the wait function.
+            parent_name="${project_parents[$project_name]:-}"
+            parent_id=""
+            if [[ -n "$parent_name" ]]; then
+                parent_id="${project_ids[$parent_name]}"
+            fi
+            wait_for_deletion_confirmation "$project_id" "$project_name" "$parent_id"
         fi
     done
     echo
