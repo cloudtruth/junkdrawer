@@ -5,17 +5,17 @@ set -e
 # Portable relpath fallback (if realpath --relative-to is not available)
 relpath_fallback() {
     # Usage: relpath_fallback <target> <base>
-    local target=$1
-    local base=$2
-    local common_part=$base
+    local target="$1"
+    local base="$2"
+    local common_part="$base"
     local result=""
 
-    while [[ "${target#$common_part}" == "$target" ]]; do
-        common_part=$(dirname "$common_part")
+    while [[ "${target#"$common_part"}" == "$target" ]]; do
+        common_part=$(dirname -- "$common_part")
         result="../$result"
     done
 
-    local forward_part="${target#$common_part}"
+    local forward_part="${target#"$common_part"}"
     forward_part="${forward_part#/}"
     echo "${result}${forward_part}"
 }

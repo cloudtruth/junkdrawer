@@ -2,7 +2,6 @@
 
 A Bash script to merge all markdown (.md) files from a folder or zip archive into one or more plain text files, with each output file kept under a configurable character limit. This is useful for preparing large document sets for import into tools with file size or character count restrictions (e.g., Google Docs).
 
-
 ## Features
 
 - Recursively finds all `.md` files in a directory or extracted zip archive.
@@ -14,7 +13,6 @@ A Bash script to merge all markdown (.md) files from a folder or zip archive int
 
 ## Usage
 
-
 ```sh
 ./text_file_merger.sh [options] <zip_or_folder_path>
 ```
@@ -25,7 +23,6 @@ A Bash script to merge all markdown (.md) files from a folder or zip archive int
 - `-h, --help`          Show help message and exit.
 
 ### Example
-
 
 ```sh
 ./text_file_merger.sh -o ~/Desktop/my_merged.md ~/Downloads/my_archive.zip
