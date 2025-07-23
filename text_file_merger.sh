@@ -129,34 +129,60 @@ main() {
         fi
     fi
 
-    # Function to write a single markdown file to the output file, with relative path (excluding root dir) or just filename if root
-    write_md() {
-        local file="$1"
-        local relpath
-        # Remove the root directory from the path for the heading
+
+
+    # Step 2: Write files to output, splitting if needed to stay under char limit
+
+    local CHAR_LIMIT=750000
+    local part=1
+    local char_count=0
+    local base_output="${output%.md}"
+    local current_output="${base_output}_part${part}.md"
+    : > "$current_output"
+
+    echo "Writing merged files to: ${base_output}_partN.md (limit: $CHAR_LIMIT chars per file)"
+
+
+
+    # POSIX-compatible: gather sorted list of files into an array
+    files=()
+    while IFS= read -r -d '' file; do
+        files+=("$file")
+    done < <(find "$search_dir" -type f -name '*.md' -print0 | sort -z)
+
+    for file in "${files[@]}"; do
         relpath=$(realpath --relative-to="$search_dir" "$file" 2>/dev/null || python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$file" "$search_dir")
-        # If relpath is empty or ".", fallback to basename
         if [[ -z "$relpath" || "$relpath" == "." ]]; then
-            relpath="$(basename "$file")"
+            relpath="$(basename -- "$file")"
         fi
         heading="# $relpath"
-        {
-            echo "$heading"
-            cat "$file"
-            echo
-        } >> "$output"
-    }
+        heading_chars=$(printf '%s' "$heading" | wc -m)
+        file_chars=$(wc -m < "$file")
+        total_chars=$((heading_chars + 1 + file_chars + 1))
 
-    # Find and process all .md files robustly (handles spaces/newlines)
-    find "$search_dir" -type f -name '*.md' -print0 | sort -z | while IFS= read -r -d '' file; do
-        write_md "$file"
+        if (( char_count + total_chars > CHAR_LIMIT )); then
+            part=$((part + 1))
+            current_output="${base_output}_part${part}.md"
+            : > "$current_output"
+            char_count=0
+        fi
+
+        {
+            printf '%s\n' "$heading"
+            cat -- "$file"
+            printf '\n'
+        } >> "$current_output"
+        char_count=$((char_count + total_chars))
+    done
+
+    echo "Done. Created $part output file(s):"
+    for ((i=1; i<=part; i++)); do
+        echo "  ${base_output}_part${i}.md"
     done
 
     if [[ -n "$tmpdir" ]]; then
         rm -rf "$tmpdir"
     fi
-
-    echo "Merged markdown files into $output"
 }
 
 main "$@"
