@@ -2,6 +2,24 @@
 
 set -e
 
+# Portable relpath fallback (if realpath --relative-to is not available)
+relpath_fallback() {
+    # Usage: relpath_fallback <target> <base>
+    local target=$1
+    local base=$2
+    local common_part=$base
+    local result=""
+
+    while [[ "${target#$common_part}" == "$target" ]]; do
+        common_part=$(dirname "$common_part")
+        result="../$result"
+    done
+
+    local forward_part="${target#$common_part}"
+    forward_part="${forward_part#/}"
+    echo "${result}${forward_part}"
+}
+
 # Usage function
 usage() {
     echo "Usage: $0 [options] <zip_or_folder_path>"
@@ -151,7 +169,11 @@ main() {
     done < <(find "$search_dir" -type f -name '*.md' -print0 | sort -z)
 
     for file in "${files[@]}"; do
-        relpath=$(realpath --relative-to="$search_dir" "$file" 2>/dev/null || python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$file" "$search_dir")
+        if relpath=$(realpath --relative-to="$search_dir" "$file" 2>/dev/null); then
+            :
+        else
+            relpath=$(relpath_fallback "$file" "$search_dir")
+        fi
         if [[ -z "$relpath" || "$relpath" == "." ]]; then
             relpath="$(basename -- "$file")"
         fi
