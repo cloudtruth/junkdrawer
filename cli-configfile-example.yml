@@ -17,10 +17,10 @@ profiles:
 
   demo-prod:
     server_url: "https://api.cloudtruth.io"
-    api_key: ""
+    api_key: "foo"
     description: "production demo"
 
   demo-staging:
     server_url: "https://api.staging.cloudtruth.io"
-    api_key: ""
+    api_key: "bar"
     description: staging demo

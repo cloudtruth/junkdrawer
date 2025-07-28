@@ -102,16 +102,20 @@ done
 
 # --- API Key Handling ---
 API_KEY=""
-
 BASE_URL=""
 if [ -n "$CONFIG_FILE" ]; then
-    API_KEY=$(yq e ".profiles.${PROFILE}.api_key" "$CONFIG_FILE")
-    BASE_URL=$(yq e ".profiles.${PROFILE}.server_url" "$CONFIG_FILE")
-    # If BASE_URL is empty or null, try to inherit from source_profile
-    if [ -z "$BASE_URL" ] || [ "$BASE_URL" == "null" ]; then
-        SOURCE_PROFILE=$(yq e ".profiles.${PROFILE}.source_profile" "$CONFIG_FILE")
+    API_KEY=$(yq e ".profiles.\"${PROFILE}\".api_key" "$CONFIG_FILE")
+    BASE_URL=$(yq e ".profiles.\"${PROFILE}\".server_url" "$CONFIG_FILE")
+    if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ] || [ -z "$API_KEY" ] || [ "$API_KEY" = "null" ]; then
+        SOURCE_PROFILE=$(yq e ".profiles.\"${PROFILE}\".source_profile" "$CONFIG_FILE")
         if [ -n "$SOURCE_PROFILE" ] && [ "$SOURCE_PROFILE" != "null" ]; then
-            BASE_URL=$(yq e ".profiles.${SOURCE_PROFILE}.server_url" "$CONFIG_FILE")
+            # Only override if missing/null
+            if [ -z "$API_KEY" ] || [ "$API_KEY" = "null" ]; then
+                API_KEY=$(yq e ".profiles.\"${SOURCE_PROFILE}\".api_key" "$CONFIG_FILE")
+            fi
+            if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ]; then
+                BASE_URL=$(yq e ".profiles.\"${SOURCE_PROFILE}\".server_url" "$CONFIG_FILE")
+            fi
         fi
     fi
 else
@@ -119,12 +123,11 @@ else
     echo
     read -rp "Enter CloudTruth API Base URL [https://api.cloudtruth.io]: " BASE_URL
 fi
-if [ -z "$API_KEY" ] || [ "$API_KEY" == "null" ]; then
+if [ -z "$API_KEY" ] || [ "$API_KEY" = "null" ]; then
     echo "🚨 Error: API key is missing." >&2
     exit 1
 fi
-# Default BASE_URL if not set
-if [ -z "$BASE_URL" ] || [ "$BASE_URL" == "null" ]; then
+if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ]; then
     BASE_URL="https://api.cloudtruth.io"
 fi
 BASE_URL="${BASE_URL%/}/api/v1"
