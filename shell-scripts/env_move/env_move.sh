@@ -255,6 +255,11 @@ populate_target_environment() {
     echo "---"
     echo "📤 Populating values from '$SOURCE_ENVIRONMENT' into '$TARGET_ENVIRONMENT'..."
 
+    if [ "$DRY_RUN" = true ]; then
+        echo "📝 DRY RUN: No changes will be made. Skipping the population of the new environment..."
+        return
+    fi
+
     local target_env_uri
     target_env_uri=$(jq -r '.results[0].url' "$TARGET_ENV_LOOKUP_RESPONSE_FILE")
     if [ -z "$target_env_uri" ] || [ "$target_env_uri" == "null" ]; then
@@ -263,17 +268,14 @@ populate_target_environment() {
     fi
     echo "✅ Found Target Environment URI: $target_env_uri"
 
-    # This jq query extracts parameters that have explicit override values set in the source environment.
-    # It's more efficient to filter in jq than in the shell loop.
     local jq_query
-    jq_query='.projects | to_entries[] | .value.parameters | to_entries[] | select(.value.values[$source_env] != null and .value.values[$source_env].source == $source_env) | {defining_project: .value.project, param_name: .key, value: .value.values[$source_env].value} | @base64'
+    jq_query=".projects | to_entries[] | .value.parameters | to_entries[] | select(.value.values[\$source_env] != null and .value.values[\$source_env].source == \$source_env) | {defining_project: .value.project, param_name: .key, value: .value.values[\$source_env].value} | @base64"
     local value_count=0
     local success_count=0
     local skipped_matched_count=0
     local skipped_different_count=0
     local failure_count=0
 
-    # Read the base64 encoded JSON objects from jq
     while IFS= read -r b64_line; do
         ((value_count++))
         local json_data
@@ -289,16 +291,14 @@ populate_target_environment() {
         echo -e "\nProcessing: Project '$defining_project' -> Parameter '$param_name'"
 
         local project_pk
-        project_pk=$(get_project_pk_by_name "$defining_project")
-        if [ $? -ne 0 ]; then
+        if ! project_pk=$(get_project_pk_by_name "$defining_project"); then
             echo "🚨 Failed to get PK for project '$defining_project'. Skipping parameter."
             ((failure_count++))
             continue
         fi
 
         local param_pk
-        param_pk=$(get_parameter_pk_by_name "$project_pk" "$param_name")
-        if [ $? -ne 0 ]; then
+        if ! param_pk=$(get_parameter_pk_by_name "$project_pk" "$param_name"); then
             echo "🚨 Failed to get PK for parameter '$param_name' in project '$defining_project'. Skipping parameter."
             ((failure_count++))
             continue
@@ -312,11 +312,10 @@ populate_target_environment() {
         case "$check_status" in
         "create")
             if [ "$DRY_RUN" = true ]; then
-                echo "DRY RUN: Would set value for parameter '$param_name'."
+                echo "DRY RUN: Would set value '$param_value' for parameter '$param_name' in project '$defining_project'"
                 ((success_count++))
             else
-                set_parameter_value "$project_pk" "$param_pk" "$target_env_uri" "$param_value"
-                if [ $? -eq 0 ]; then
+                if set_parameter_value "$project_pk" "$param_pk" "$target_env_uri" "$param_value"; then
                     ((success_count++))
                 else
                     ((failure_count++))
