@@ -12,6 +12,31 @@ TIMEOUT=600           # total seconds before giving up
 LOG_FILE="${MONITOR_TASK_LOG:-/tmp/monitor_task.log}"
 
 # --- Helper Functions ---
+usage() {
+    cat <<EOF
+Monitor the status of a CloudTruth integration action task until it completes.
+
+Usage:
+  $0 PROVIDER INTEGRATION_TYPE INTEGRATION_PK ACTION_PK
+
+Arguments:
+  PROVIDER         The integration provider (e.g., aws, github, azure)
+  INTEGRATION_TYPE The type of action (push or pull)
+  INTEGRATION_PK   The unique ID (PK) of the integration
+  ACTION_PK        The unique ID (PK) of the push or pull action
+
+Options:
+  -h, --help       Show this help message and exit
+
+Environment:
+  CLOUDTRUTH_API_KEY   Your CloudTruth API key (required)
+  MONITOR_TASK_LOG     Path to log file (optional, default: /tmp/monitor_task.log)
+
+Example:
+  CLOUDTRUTH_API_KEY=xxxx $0 aws push 12e647a5-... 960e2893-...
+EOF
+}
+
 log() {
     # $1 = type (TASK or STEP), $2 = message
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2" >> "$LOG_FILE"
@@ -65,8 +90,14 @@ command -v jq >/dev/null 2>&1 || error "jq is required but not installed."
 [[ -n "${CLOUDTRUTH_API_KEY:-}" ]] || error "CLOUDTRUTH_API_KEY environment variable is not set."
 
 # --- Argument Parsing ---
+# --- Argument Parsing ---
+if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
 if [[ $# -ne 4 ]]; then
-    echo "Usage: $0 PROVIDER INTEGRATION_TYPE INTEGRATION_PK ACTION_PK"
+    usage
     exit 2
 fi
 
@@ -83,7 +114,11 @@ case "$INTEGRATION_TYPE" in
 esac
 
 # --- API URL Construction ---
-TASKS_URL="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/"
+if [[ "$PROVIDER" == "azure" ]]; then
+    TASKS_URL="$API_BASE_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/"
+else
+    TASKS_URL="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/"
+fi
 
 # --- Get Latest Task ---
 response=$(curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" "$TASKS_URL" 2> >(tee -a "$LOG_FILE" >&2))
@@ -109,7 +144,13 @@ while [[ "$task_state" == "queued" || "$task_state" == "running" ]]; do
     fi
     sleep "$POLL_INTERVAL"
     ((elapsed+=POLL_INTERVAL))
-    task_url="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/"
+
+    if [[ "$PROVIDER" == "azure" ]]; then
+        task_url="$API_BASE_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/"
+    else
+        task_url="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/"
+    fi
+
     response=$(curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" "$task_url" 2> >(tee -a "$LOG_FILE" >&2))
     curl_exit=$?
     if [[ $curl_exit -ne 0 ]]; then
@@ -135,7 +176,12 @@ elif [[ "$task_state" != "success" ]]; then
 fi
 
 # --- Check Task Steps ---
-steps_url="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/steps/"
+if [[ "$PROVIDER" == "azure" ]]; then
+    steps_url="$API_BASE_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/steps/"
+else
+    steps_url="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/steps/"
+fi
+
 response=$(curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" "$steps_url" 2> >(tee -a "$LOG_FILE" >&2))
 curl_exit=$?
 if [[ $curl_exit -ne 0 ]]; then
