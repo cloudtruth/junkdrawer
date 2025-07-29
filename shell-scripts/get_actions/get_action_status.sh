@@ -287,45 +287,32 @@ main() {
     local state
     state=$(get_action_status "$action_url" "$action_json")
 
-    if [ "$state" = "queued" ]; then
-        # Check how long it's been queued
-        queued_time=$(get_action_queued_time "$action_json")
-        if [ -n "$queued_time" ]; then
-            # Convert to epoch seconds
-            now_epoch=$(date +%s)
-            queued_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${queued_time:0:19}" +%s 2>/dev/null || date -d "$queued_time" +%s)
-            if [ -n "$queued_epoch" ] && [ $((now_epoch - queued_epoch)) -gt 600 ]; then
-                echo "⚠️  Action has been queued for more than 10 minutes!"
+    # Poll while state is queued or running
+    while [ "$state" = "queued" ] || [ "$state" = "running" ]; do
+        if [ "$state" = "queued" ]; then
+            queued_time=$(get_action_queued_time "$action_json")
+            if [ -n "$queued_time" ]; then
+                now_epoch=$(date +%s)
+                queued_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${queued_time:0:19}" +%s 2>/dev/null || date -d "$queued_time" +%s)
+                if [ -n "$queued_epoch" ] && [ $((now_epoch - queued_epoch)) -gt 600 ]; then
+                    echo "⚠️  Action has been queued for more than 10 minutes!"
+                fi
             fi
+            if [ "$OUTPUT_TYPE" = "table" ]; then
+                echo "Action is currently queued."
+            fi
+        elif [ "$state" = "running" ] && [ "$OUTPUT_TYPE" = "table" ]; then
+            echo "Action is running. Polling every 30 seconds until completion..."
         fi
-        if [ "$OUTPUT_TYPE" = "table" ]; then
-            echo "Action is currently queued."
-        fi
-        print_tasks "$(get_tasks_url "$integration_type" "$integration_id" "$action_type" "$ACTION_ID")" "$TEMP_DIR/tasks.json"
-        exit 0
-    fi
 
-    if [ "$state" = "running" ]; then
-        if [ "$OUTPUT_TYPE" = "table" ]; then
-            echo "Action is running. Polling every 2 minutes until completion..."
-        fi
-        while [ "$state" = "running" ]; do
-            print_tasks "$(get_tasks_url "$integration_type" "$integration_id" "$action_type" "$ACTION_ID")" "$TEMP_DIR/tasks.json"
-            sleep 120
-            state=$(get_action_status "$action_url" "$action_json")
-        done
-        if [ "$OUTPUT_TYPE" = "table" ]; then
-            echo "Polling finished. Final state: $state"
-        fi
         print_tasks "$(get_tasks_url "$integration_type" "$integration_id" "$action_type" "$ACTION_ID")" "$TEMP_DIR/tasks.json"
-        if [ "$state" = "failure" ]; then
-            exit 2
-        fi
-        exit 0
-    fi
+        sleep 30
+        state=$(get_action_status "$action_url" "$action_json")
+    done
 
+    # Final output after polling
     if [ "$OUTPUT_TYPE" = "table" ]; then
-        echo "Action is in state: $state"
+        echo "Polling finished. Final state: $state"
     fi
     print_tasks "$(get_tasks_url "$integration_type" "$integration_id" "$action_type" "$ACTION_ID")" "$TEMP_DIR/tasks.json"
     if [ "$state" = "failure" ]; then
