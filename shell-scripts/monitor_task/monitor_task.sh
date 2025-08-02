@@ -7,8 +7,8 @@ set -euo pipefail
 
 # --- Configuration ---
 API_BASE_URL="https://api.cloudtruth.io/api/v1/integrations"
-POLL_INTERVAL=10      # seconds between polls
-TIMEOUT=600           # total seconds before giving up
+POLL_INTERVAL=10 # seconds between polls
+TIMEOUT=600      # total seconds before giving up
 LOG_FILE="${MONITOR_TASK_LOG:-/tmp/monitor_task.log}"
 
 # --- Helper Functions ---
@@ -39,7 +39,7 @@ EOF
 
 log() {
     # $1 = type (TASK or STEP), $2 = message
-    echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2" >> "$LOG_FILE"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2" >>"$LOG_FILE"
 }
 
 log_task_details() {
@@ -108,9 +108,9 @@ ACTION_PK="$4"
 
 # Normalize action type for API path
 case "$INTEGRATION_TYPE" in
-    push)   ACTION_TYPE_PATH="pushes" ;;
-    pull)   ACTION_TYPE_PATH="pulls" ;;
-    *)      ACTION_TYPE_PATH="$INTEGRATION_TYPE" ;;
+push) ACTION_TYPE_PATH="pushes" ;;
+pull) ACTION_TYPE_PATH="pulls" ;;
+*) ACTION_TYPE_PATH="$INTEGRATION_TYPE" ;;
 esac
 
 # --- API URL Construction ---
@@ -131,19 +131,22 @@ task_id=$(echo "$response" | jq -r '.results[0].id // empty')
 task_state=$(echo "$response" | jq -r '.results[0].state // empty')
 log "TASK" "Initial task fetch: id=$task_id, state=$task_state"
 
-[[ -n "$task_id" && -n "$task_state" ]] || { log "TASK" "No tasks found. Response: $response"; error "No tasks found for the given action."; }
+[[ -n "$task_id" && -n "$task_state" ]] || {
+    log "TASK" "No tasks found. Response: $response"
+    error "No tasks found for the given action."
+}
 
 echo "Monitoring task $task_id (initial state: $task_state)..."
 
 # --- Poll for Task Completion ---
 elapsed=0
 while [[ "$task_state" == "queued" || "$task_state" == "running" ]]; do
-    if (( elapsed >= TIMEOUT )); then
+    if ((elapsed >= TIMEOUT)); then
         log "TASK" "Timeout reached. Last response details:"
         error "Timeout reached while waiting for task to complete."
     fi
     sleep "$POLL_INTERVAL"
-    ((elapsed+=POLL_INTERVAL))
+    ((elapsed += POLL_INTERVAL))
 
     if [[ "$PROVIDER" == "azure" ]]; then
         task_url="$API_BASE_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/"
