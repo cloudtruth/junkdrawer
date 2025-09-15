@@ -9,9 +9,7 @@ Polls a CloudTruth parameter's value in a specific project/environment until it 
 
 Options:
   -h, --help            Show this help message and exit
-  -n, --dry-run         Show actions without making changes (no effect, read-only)
-  -o, --output <dir>    Specify output directory (default: $HOME)
-  --profile <profile>   Use a specific profile from config
+  --profile <profile>   Use a specific CloudTruth CLI profile from the local config file (default: "default")
 
 Arguments:
   <project>         CloudTruth project name
@@ -27,27 +25,12 @@ EOF
 }
 
 # --- Argument Parsing ---
-DRY_RUN="false"
-OUTPUT_DIR="$HOME"
 PROFILE="default"
 
 while (($# > 0)); do
     case "$1" in
         -h|--help)
             usage
-            ;;
-        -n|--dry-run)
-            DRY_RUN="true"
-            shift
-            ;;
-        -o|--output)
-            if [ -n "$2" ]; then
-                OUTPUT_DIR="$2"
-                shift 2
-            else
-                echo "🚨 Error: Option $1 requires an argument." >&2
-                exit 1
-            fi
             ;;
         --profile)
             if [ -n "$2" ]; then
