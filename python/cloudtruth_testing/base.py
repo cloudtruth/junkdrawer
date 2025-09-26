@@ -25,7 +25,7 @@ def find_config_file():
 def load_api_config(profile):
     config_file = find_config_file()
     if not config_file:
-        print("🚨 Error: Could not find CloudTruth CLI config file.", file=sys.stderr)
+        logger.error("🚨 Error: Could not find CloudTruth CLI config file.")
         sys.exit(1)
     with open(config_file, 'r') as f:
         config = yaml.safe_load(f)
@@ -39,7 +39,7 @@ def load_api_config(profile):
         api_key = api_key or sp.get('api_key')
         base_url = base_url or sp.get('server_url')
     if not api_key or api_key == "null":
-        print("🚨 Error: API key is missing.", file=sys.stderr)
+        logger.error("🚨 Error: API key is missing.")
         sys.exit(1)
     if not base_url or base_url == "null":
         base_url = "https://api.cloudtruth.io"
@@ -55,7 +55,7 @@ def api_request(method, url, api_key, payload=None):
 def get_id_by_name(url, api_key, name):
     resp = api_request("GET", url, api_key)
     if resp.status_code != 200:
-        print(f"🚨 Error: Failed to fetch from {url} ({resp.status_code})", file=sys.stderr)
+        logger.error(f"🚨 Error: Failed to fetch from {url} ({resp.status_code})")
         sys.exit(1)
     results = resp.json().get('results', [])
     for item in results:
@@ -76,27 +76,27 @@ def ensure_template_exists(base_url, api_key, project_id, template_name):
     templates_url = f"{base_url}/projects/{project_id}/templates/"
     template_id = get_id_by_name(templates_url, api_key, template_name)
     if not template_id:
-        print(f"ℹ️  Template '{template_name}' not found in project. Creating a new blank template...")
+        logger.info(f"ℹ️  Template '{template_name}' not found in project. Creating a new blank template...")
         payload = {"name": template_name, "body": "initial body"}
         resp = api_request("POST", templates_url, api_key, payload)
         if 200 <= resp.status_code < 300:
-            print(f"✅ Template '{template_name}' created.")
+            logger.info(f"✅ Template '{template_name}' created.")
             template_id = get_id_by_name(templates_url, api_key, template_name)
         else:
-            print(f"🚨 Error: Failed to create template. Status: {resp.status_code} ({http_status_name(resp.status_code)})")
-            print(resp.text)
+            logger.error(f"🚨 Error: Failed to create template. Status: {resp.status_code} ({http_status_name(resp.status_code)})")
+            logger.error(resp.text)
             sys.exit(1)
         if not template_id:
-            print("🚨 Error: Could not confirm template creation.", file=sys.stderr)
+            logger.error("🚨 Error: Could not confirm template creation.")
             sys.exit(1)
     else:
-        print(f"✅ Template '{template_name}' exists in project.")
+        logger.info(f"✅ Template '{template_name}' exists in project.")
     return template_id
 
 def ensure_project_exists(base_url, api_key, project_name):
     projects_url = f"{base_url}/projects/"
     project_id = get_id_by_name(projects_url, api_key, project_name)
     if not project_id:
-        print(f"🚨 Error: Project '{project_name}' not found.", file=sys.stderr)
+        logger.error(f"🚨 Error: Project '{project_name}' not found.")
         sys.exit(1)
     return project_id

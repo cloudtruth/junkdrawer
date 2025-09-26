@@ -1,6 +1,5 @@
 import sys
 import argparse
-from venv import logger
 from .base import (
     load_api_config,
     ensure_project_exists,
@@ -12,6 +11,8 @@ from .base import (
 from .http_status_name import http_status_name
 from .logger import setup_logger
 from urllib.parse import urlparse
+
+logger = setup_logger(log_file="test_results.log", level="DEBUG")
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -71,8 +72,6 @@ def test_update(method, url, api_key, template_name, new_body, dry_run):
 def main(args=None):
     args = parse_args(args)
     api_key, base_url = load_api_config(args.profile)
-
-    logger = setup_logger(log_file="test_results.log", level="DEBUG")
 
     # Print base URL once
     base_url_prefix = base_url.rstrip('/')
