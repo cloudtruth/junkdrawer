@@ -12,7 +12,7 @@ from .http_status_name import http_status_name
 from .logger import setup_logger
 from urllib.parse import urlparse
 
-logger = setup_logger(log_file="test_results.log", level="DEBUG")
+logger = setup_logger(log_file="test_results.log", console_level="INFO", file_level="DEBUG")
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -51,6 +51,7 @@ def test_update(method, url, api_key, template_name, new_body, dry_run):
     endpoint = get_endpoint_path(url)
     logger.info(f"Testing {method} {endpoint}")
     resp = api_request(method, url, api_key, payload)
+    logger.debug(f"API Response [{method} {endpoint}]: {resp.status_code} {resp.text}")
     status = resp.status_code
     status_name = http_status_name(status)
 
