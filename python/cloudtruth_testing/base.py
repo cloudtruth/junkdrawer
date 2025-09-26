@@ -6,6 +6,9 @@ import requests
 import yaml
 
 from .http_status_name import http_status_name
+from .logger import setup_logger
+
+logger = setup_logger()
 
 def find_config_file():
     home = os.path.expanduser('~')
