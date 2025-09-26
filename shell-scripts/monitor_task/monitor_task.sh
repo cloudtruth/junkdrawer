@@ -6,7 +6,8 @@
 set -euo pipefail
 
 # --- Configuration ---
-API_BASE_URL="https://api.cloudtruth.io/api/v1/integrations"
+API_BASE_URL="https://api.cloudtruth.io/api/v1"
+API_BASE_INTEGRATIONS_URL="${API_BASE_URL}/integrations"
 POLL_INTERVAL=10 # seconds between polls
 TIMEOUT=600      # total seconds before giving up
 LOG_FILE="${MONITOR_TASK_LOG:-/tmp/monitor_task.log}"
@@ -84,6 +85,48 @@ error() {
     exit 1
 }
 
+<<<<<<< Updated upstream
+=======
+get_project_pk() {
+    curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" \
+        "https://api.cloudtruth.io/api/v1/projects/?name=$1" | jq -r '.results[0].id // empty'
+}
+
+get_environment_pk() {
+    curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" \
+        "https://api.cloudtruth.io/api/v1/environments/?name=$1" | jq -r '.results[0].id // empty'
+}
+
+get_integration_pk() {
+    curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" \
+        "https://api.cloudtruth.io/api/v1/integrations/$1/?project=$2" | jq -r '.results[0].id // empty'
+}
+
+get_action_pk() {
+    if [[ -n "$ENVIRONMENT_PK" ]]; then
+        local env_uri="${API_BASE_URL}/environments/${ENVIRONMENT_PK}/"
+        curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" \
+            "https://api.cloudtruth.io/api/v1/integrations/$1/$2/$3/?environment=${env_uri}&name=$4" | jq -r '.results[0].id // empty'
+    else
+        curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" \
+            "https://api.cloudtruth.io/api/v1/integrations/$1/$2/$3/?name=$4" | jq -r '.results[0].id // empty'
+    fi
+}
+
+validate_environment_tag_for_action() {
+    local environment_pk="$1"
+    local action_pk="$2"
+    local environment_name="$3"
+
+    tags_url="https://api.cloudtruth.io/api/v1/environments/${environment_pk}/tags/?action=${action_pk}"
+    tags_response=$(curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" "$tags_url")
+    tag_exists=$(echo "$tags_response" | jq -e --arg env "$environment_name" '.results[] | select(.name == $env)' > /dev/null; echo $?)
+    if [[ "$tag_exists" -ne 0 ]]; then
+        error "Environment '$environment_name' is not associated with action: $ACTION_NAME."
+    fi
+}
+
+>>>>>>> Stashed changes
 # --- Prerequisite Checks ---
 command -v curl >/dev/null 2>&1 || error "curl is required but not installed."
 command -v jq >/dev/null 2>&1 || error "jq is required but not installed."
@@ -113,11 +156,35 @@ pull) ACTION_TYPE_PATH="pulls" ;;
 *) ACTION_TYPE_PATH="$INTEGRATION_TYPE" ;;
 esac
 
+<<<<<<< Updated upstream
 # --- API URL Construction ---
 if [[ "$PROVIDER" == "azure" ]]; then
     TASKS_URL="$API_BASE_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/"
 else
     TASKS_URL="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/"
+=======
+#TODO Need error handling when does not exist
+PROJECT_PK=$(get_project_pk "$PROJECT_NAME")
+INTEGRATION_PK=$(get_integration_pk "$PROVIDER" "$PROJECT_PK")
+
+if [[ -n "${ENVIRONMENT_NAME:-}" ]]; then
+    ENVIRONMENT_PK=$(get_environment_pk "$ENVIRONMENT_NAME")
+else
+    ENVIRONMENT_PK=""
+fi
+
+ACTION_PK=$(get_action_pk "$PROVIDER" "$INTEGRATION_PK" "$INTEGRATION_TYPE_NORMALIZED" "$ACTION_NAME")
+
+if [[ -n "$ENVIRONMENT_NAME" ]]; then
+    validate_environment_tag_for_action "$ENVIRONMENT_PK" "$ACTION_PK" "$ENVIRONMENT_NAME"
+fi
+
+# --- API URL Construction ---
+if [[ "$PROVIDER" == "azure" ]]; then
+    TASKS_URL="$API_BASE_INTEGRATIONS_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${INTEGRATION_TYPE_NORMALIZED}/${ACTION_PK}/tasks/"
+else
+    TASKS_URL="$API_BASE_INTEGRATIONS_URL/${PROVIDER}/${INTEGRATION_PK}/${INTEGRATION_TYPE_NORMALIZED}/${ACTION_PK}/tasks/"
+>>>>>>> Stashed changes
 fi
 
 # --- Get Latest Task ---
@@ -149,9 +216,15 @@ while [[ "$task_state" == "queued" || "$task_state" == "running" ]]; do
     ((elapsed += POLL_INTERVAL))
 
     if [[ "$PROVIDER" == "azure" ]]; then
+<<<<<<< Updated upstream
         task_url="$API_BASE_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/"
     else
         task_url="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/"
+=======
+        task_url="$API_BASE_INTEGRATIONS_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${INTEGRATION_TYPE_NORMALIZED}/${ACTION_PK}/tasks/${task_id}/"
+    else
+        task_url="$API_BASE_INTEGRATIONS_URL/${PROVIDER}/${INTEGRATION_PK}/${INTEGRATION_TYPE_NORMALIZED}/${ACTION_PK}/tasks/${task_id}/"
+>>>>>>> Stashed changes
     fi
 
     response=$(curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" "$task_url" 2> >(tee -a "$LOG_FILE" >&2))
@@ -180,9 +253,15 @@ fi
 
 # --- Check Task Steps ---
 if [[ "$PROVIDER" == "azure" ]]; then
+<<<<<<< Updated upstream
     steps_url="$API_BASE_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/steps/"
 else
     steps_url="$API_BASE_URL/${PROVIDER}/${INTEGRATION_PK}/${ACTION_TYPE_PATH}/${ACTION_PK}/tasks/${task_id}/steps/"
+=======
+    steps_url="$API_BASE_INTEGRATIONS_URL/${PROVIDER}/key_vault/${INTEGRATION_PK}/${INTEGRATION_TYPE_NORMALIZED}/${ACTION_PK}/tasks/${task_id}/steps/"
+else
+    steps_url="$API_BASE_INTEGRATIONS_URL/${PROVIDER}/${INTEGRATION_PK}/${INTEGRATION_TYPE_NORMALIZED}/${ACTION_PK}/tasks/${task_id}/steps/"
+>>>>>>> Stashed changes
 fi
 
 response=$(curl -sS -H "Authorization: Api-Key $CLOUDTRUTH_API_KEY" "$steps_url" 2> >(tee -a "$LOG_FILE" >&2))

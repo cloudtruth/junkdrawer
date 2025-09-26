@@ -11,7 +11,7 @@ Options:
   -h, --help            Show this help message and exit
   -n, --dry-run         Show actions without making changes
   -o, --output <dir>    Specify output directory (default: $HOME)
-  --profile <profile>   Use a specific profile from config
+  --profile <profile>   Use a specific CloudTruth CLI profile from the local config file (default: "default")
 EOF
     exit 0
 }
