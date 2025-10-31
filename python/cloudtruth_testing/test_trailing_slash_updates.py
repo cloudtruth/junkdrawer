@@ -72,17 +72,16 @@ def test_update(method, url, api_key, template_name, new_body, dry_run):
 
 def main(args=None):
     args = parse_args(args)
-    api_key, base_url = load_api_config(args.profile)
+    try:
+        api_key, base_url = load_api_config(args.profile)
+        base_url_prefix = base_url.rstrip('/')
+        logger.info(f"Base URL: {base_url_prefix}")
 
-    # Print base URL once
-    base_url_prefix = base_url.rstrip('/')
-    logger.info(f"Base URL: {base_url_prefix}")
-
-    # Get Project ID
-    project_id = ensure_project_exists(base_url, api_key, args.project)
-
-    # Get/Create Template
-    template_id = ensure_template_exists(base_url, api_key, project_id, args.template)
+        project_id = ensure_project_exists(base_url, api_key, args.project)
+        template_id = ensure_template_exists(base_url, api_key, project_id, args.template)
+    except Exception as e:
+        logger.error(f"Setup failed: {e}")
+        sys.exit(1)
 
     template_url = f"{base_url}/projects/{project_id}/templates/{template_id}/"
     template_url_no_slash = template_url.rstrip('/')
@@ -90,16 +89,28 @@ def main(args=None):
     rand_body = random_body()
 
     logger.info("== PATCH without trailing slash ==")
-    test_update("PATCH", template_url_no_slash, api_key, args.template, f"{rand_body}-patch-no-slash", args.dry_run)
+    try:
+        test_update("PATCH", template_url_no_slash, api_key, args.template, f"{rand_body}-patch-no-slash", args.dry_run)
+    except Exception as e:
+        logger.error(f"PATCH without trailing slash failed: {e}")
 
     logger.info("== PATCH with trailing slash ==")
-    test_update("PATCH", template_url, api_key, args.template, f"{rand_body}-patch-slash", args.dry_run)
+    try:
+        test_update("PATCH", template_url, api_key, args.template, f"{rand_body}-patch-slash", args.dry_run)
+    except Exception as e:
+        logger.error(f"PATCH with trailing slash failed: {e}")
 
     logger.info("== PUT without trailing slash ==")
-    test_update("PUT", template_url_no_slash, api_key, args.template, f"{rand_body}-put-no-slash", args.dry_run)
+    try:
+        test_update("PUT", template_url_no_slash, api_key, args.template, f"{rand_body}-put-no-slash", args.dry_run)
+    except Exception as e:
+        logger.error(f"PUT without trailing slash failed: {e}")
 
     logger.info("== PUT with trailing slash ==")
-    test_update("PUT", template_url, api_key, args.template, f"{rand_body}-put-slash", args.dry_run)
+    try:
+        test_update("PUT", template_url, api_key, args.template, f"{rand_body}-put-slash", args.dry_run)
+    except Exception as e:
+        logger.error(f"PUT with trailing slash failed: {e}")
 
     logger.info("Done.")
 

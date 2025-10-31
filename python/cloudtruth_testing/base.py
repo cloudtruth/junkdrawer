@@ -50,13 +50,17 @@ def api_request(method, url, api_key, payload=None):
         "Authorization": f"Api-Key {api_key}",
         "Content-Type": "application/json"
     }
-    return requests.request(method, url, headers=headers, json=payload)
+    resp = requests.request(method, url, headers=headers, json=payload)
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        logger.error(f"HTTP error for {method} {url}: {e}")
+        logger.error(f"Response: {resp.text}")
+        raise
+    return resp
 
 def get_id_by_name(url, api_key, name):
     resp = api_request("GET", url, api_key)
-    if resp.status_code != 200:
-        logger.error(f"🚨 Error: Failed to fetch from {url} ({resp.status_code})")
-        sys.exit(1)
     results = resp.json().get('results', [])
     for item in results:
         if item.get('name') == name:
@@ -65,9 +69,7 @@ def get_id_by_name(url, api_key, name):
 
 def get_template_body(url, api_key):
     resp = api_request("GET", url, api_key)
-    if resp.status_code == 200:
-        return resp.json().get('body')
-    return None
+    return resp.json().get('body')
 
 def random_body():
     return "body-" + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
@@ -79,16 +81,11 @@ def ensure_template_exists(base_url, api_key, project_id, template_name):
         logger.info(f"ℹ️  Template '{template_name}' not found in project. Creating a new blank template...")
         payload = {"name": template_name, "body": "initial body"}
         resp = api_request("POST", templates_url, api_key, payload)
-        if 200 <= resp.status_code < 300:
-            logger.info(f"✅ Template '{template_name}' created.")
-            template_id = get_id_by_name(templates_url, api_key, template_name)
-        else:
-            logger.error(f"🚨 Error: Failed to create template. Status: {resp.status_code} ({http_status_name(resp.status_code)})")
-            logger.error(resp.text)
-            sys.exit(1)
+        logger.info(f"✅ Template '{template_name}' created.")
+        template_id = get_id_by_name(templates_url, api_key, template_name)
         if not template_id:
             logger.error("🚨 Error: Could not confirm template creation.")
-            sys.exit(1)
+            raise RuntimeError("Could not confirm template creation.")
     else:
         logger.info(f"✅ Template '{template_name}' exists in project.")
     return template_id
@@ -98,5 +95,5 @@ def ensure_project_exists(base_url, api_key, project_name):
     project_id = get_id_by_name(projects_url, api_key, project_name)
     if not project_id:
         logger.error(f"🚨 Error: Project '{project_name}' not found.")
-        sys.exit(1)
+        raise RuntimeError(f"Project '{project_name}' not found.")
     return project_id
