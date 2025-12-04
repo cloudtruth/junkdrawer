@@ -1,5 +1,15 @@
-def http_status_name(code):
-    names = {
+def http_status_name(code: int) -> str:
+  """
+  Return the standard name for an HTTP status code.
+
+  Args:
+      code (int): The HTTP status code.
+
+  Returns:
+      str: The standard name for the HTTP status code or 'Unknown' if not found.
+  """
+
+  names = {
         100: "Continue", 101: "Switching Protocols", 102: "Processing", 103: "Early Hints",
         200: "OK", 201: "Created", 202: "Accepted", 203: "Non-Authoritative Information",
         204: "No Content", 205: "Reset Content", 206: "Partial Content", 207: "Multi-Status",
@@ -17,4 +27,4 @@ def http_status_name(code):
         504: "Gateway Timeout", 505: "HTTP Version Not Supported", 506: "Variant Also Negotiates",
         507: "Insufficient Storage", 508: "Loop Detected", 510: "Not Extended", 511: "Network Authentication Required"
     }
-    return names.get(code, "Unknown")
+  return names.get(code, "Unknown")

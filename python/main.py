@@ -1,16 +1,22 @@
 import sys
 import argparse
-from cloudtruth_testing.logger import setup_logger
-from cloudtruth_testing import test_trailing_slash_updates
+import logging
+from .cloudtruth_testing.logger import setup_logger
+from .cloudtruth_testing import test_trailing_slash_updates
 
-logger = setup_logger(log_file="test_results.log", console_level="INFO", file_level="DEBUG")
+logger: logging.Logger = setup_logger(
+  log_file="test_results.log",
+  console_level=logging.INFO,
+  file_level=logging.DEBUG
+)
 
 # Collect test modules in a dictionary for easy extension
-TESTS = {
+from typing import Callable
+TESTS: dict[str, Callable[[list[str] | None], None]] = {
     "trailing_slash_updates": test_trailing_slash_updates.main,
 }
 
-def main():
+def main(args: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="CloudTruth API Test Suite Runner"
     )

@@ -1,6 +1,10 @@
 import logging
 
-def setup_logger(log_file=None, console_level=logging.INFO, file_level=logging.DEBUG):
+def setup_logger(
+  log_file: str | None = None,
+  console_level: int = logging.INFO,
+  file_level: int = logging.DEBUG
+) -> logging.Logger:
     logger = logging.getLogger("cloudtruth_testing")
     logger.setLevel(logging.DEBUG)  # Set to lowest so handlers control output
 
